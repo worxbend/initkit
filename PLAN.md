@@ -2018,3 +2018,13 @@ checkbox selection, variable interpolation, host detection, the informational
 role of `spec.target.os`, state path selection, interrupt/resume examples with
 `--state`, and the current safety model. Recursive documentation checkpoint
 checks passed: `./mill __.compile` and `./mill __.test`.
+
+Final validation T037, 2026-06-28: the completed project was revalidated
+against the requested final checks. Recursive compile and tests passed with the
+checked-in Mill wrapper. Non-interactive CLI smokes passed for root help,
+`apply --help`, `apply --config config.example.yaml --dry-run`, and
+`tui --help`; the dry-run was also checked with a throwaway `--state` path and
+did not create a state file. `git diff --check` and `jq empty
+.agent-loop/tasks.json` passed. No runtime source fix was needed. Formatter
+validation remains unavailable because `.scalafmt.conf` exists but no local
+`scalafmt` executable or Mill formatter target is configured.
