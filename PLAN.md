@@ -1644,3 +1644,13 @@ behavior. Additional validation passed: `git diff --check`, `jq empty
 .agent-loop/tasks.json`, and `./mill app.run --help`. No source fix was needed.
 `.scalafmt.conf` exists, but no local scalafmt executable or Mill formatting
 target is configured, so formatter validation remains unavailable.
+
+Progress note, 2026-06-28: T017 added command execution contracts in the
+`core` module. `CommandSpec` now models direct argv and shell-mode invocations
+without splitting argv, plus cwd, env values, sudo mode, timeout, and
+sensitivity metadata. `CommandRedactor` covers metadata-marked values,
+sensitive env keys, URL credentials/query parameters, option-following secrets,
+and password/token/api-key style assignments. Command result and termination
+types, a sudo strategy interface, and deterministic fake command/sudo backends
+were added for executor tests; no test invokes real sudo. Checks passed:
+`./mill core.test`, `./mill __.compile`, and `./mill __.test`.
