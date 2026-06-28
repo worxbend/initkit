@@ -2650,3 +2650,19 @@ a throwaway state path and assert no state file is created. Checks passed:
 `./mill __.compile`, `./mill __.test`, final
 `./mill mill.scalalib.scalafmt/checkFormatAll`, `git diff --check`, and
 `jq empty .agent-loop/tasks.json`.
+
+Validation checkpoint T007 / iteration 68, 2026-06-29: final noninteractive
+polish validation passed without source-code fixes. Mill discovery passed for
+`./mill --no-daemon resolve _`, listing `app`, `cli`, `config`, `core`,
+`host`, `selective`, and `tui`. Configured validation passed:
+`./mill __.compile`, `./mill __.test`, and
+`./mill mill.scalalib.scalafmt/checkFormatAll`. Root, `apply`, and `tui` help
+smokes passed. Dry-run apply passed for `config.example.yaml` and all public
+distro examples with throwaway `/tmp/initkit-final-*-state.json` paths, and no
+throwaway state files were created. `jq empty .agent-loop/tasks.json`,
+`jq empty .agent-loop/config.json`, `git diff --check`, and the
+conflict-marker scan all passed. `native-image` is not on `PATH` in this local
+environment, so native-image packaging remains unavailable locally rather than
+a validation failure. Full-screen manual TUI interaction remains covered by
+terminal-free tests and noninteractive smokes, not by a human-driven terminal
+session in this loop.
