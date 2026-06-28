@@ -1809,3 +1809,20 @@ script attached as stdin, while Miniforge renders as
 actions without creating temp files, downloading, or invoking the command
 executor. Checks passed: `./mill core.test`, `./mill __.compile`,
 `./mill __.test`, `git diff --check`, and `jq empty .agent-loop/tasks.json`.
+
+Progress note, 2026-06-28: T024 added direct binary-download support in the
+`core` module. `BinaryDownloadsExecutor` downloads direct files through an
+injectable HTTP client, with the production client using sttp client4
+`DefaultSyncBackend`, configured connection/read timeouts, and `asPath` so
+response bodies are written to disk rather than loaded into memory. Downloads
+target a temporary file in the destination directory, verify configured
+checksums before installation, set POSIX file permissions from manifest modes,
+and replace the destination with an atomic move where the filesystem supports
+it. `PackageManagerInstallers` now delegates `binary-downloads` operations to
+this executor, while archive items fail with a clear item-level unsupported
+message until T025 implements archive extraction. Tests use a fake HTTP client
+and temp filesystem fixtures; no test performs live network calls. Checks
+passed: `./mill core.compile`, `./mill core.test.testOnly
+initkit.core.BinaryDownloadsExecutorTests`, `./mill core.test`,
+`./mill __.compile`, `./mill __.test`, `git diff --check`, and
+`jq empty .agent-loop/tasks.json`.

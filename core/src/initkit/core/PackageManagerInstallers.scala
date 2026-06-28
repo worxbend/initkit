@@ -9,6 +9,9 @@ final class PackageManagerInstallers(
     commandExecutor: CommandExecutor,
     aptUpdateBeforeInstall: Boolean = false,
     hostFacts: HostFacts = HostFacts.fake(),
+    binaryDownloadHttpClient: BinaryDownloadHttpClient = BinaryDownloadHttpClient.Sttp,
+    binaryDownloadFiles: BinaryDownloadFiles = BinaryDownloadFiles.Jvm,
+    binaryDownloadHttpConfig: BinaryDownloadHttpConfig = BinaryDownloadHttpConfig.default,
     shellScriptDownloader: ShellScriptDownloader = ShellScriptDownloader.Jdk,
     shellScriptFiles: ShellScriptFiles = ShellScriptFiles.Jvm
 ) extends PlanOperationInstaller:
@@ -76,7 +79,8 @@ final class PackageManagerInstallers(
       operation: InstallerPlanOperation[InstallerSpec.BinaryDownloads],
       policy: ExecutionPolicy
   ): PlanOperationOutcome =
-    unsupported(operation.summary)
+    new BinaryDownloadsExecutor(binaryDownloadHttpClient, binaryDownloadFiles, binaryDownloadHttpConfig)
+      .install(operation, policy)
 
   override def installShellScripts(
       operation: InstallerPlanOperation[InstallerSpec.ShellScripts],
