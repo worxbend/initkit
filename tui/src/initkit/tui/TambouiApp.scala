@@ -1,13 +1,13 @@
-package initkit
+package initkit.tui
 
 import dev.tamboui.layout.Flex.{END, SPACE_BETWEEN}
 import dev.tamboui.toolkit.Toolkit.{panel, row, spacer, text}
 import dev.tamboui.toolkit.app.ToolkitRunner
 
-object TambouiApp {
-  def run(name: String, title: String): Unit = {
+object TambouiApp:
+  def run(name: String, title: String): Unit =
     val runner = ToolkitRunner.create()
-    try {
+    try
       runner.run { () =>
         panel(
           title,
@@ -17,8 +17,5 @@ object TambouiApp {
           row(text("Press q to exit").dim()).length(1).flex(END)
         ).rounded().flex(SPACE_BETWEEN)
       }
-    } finally {
+    finally
       runner.close()
-    }
-  }
-}

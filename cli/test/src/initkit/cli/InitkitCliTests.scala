@@ -1,11 +1,11 @@
-package initkit
+package initkit.cli
 
 import java.io.{PrintWriter, StringWriter}
 
 import picocli.CommandLine
 import utest.*
 
-object MainTests extends TestSuite:
+object InitkitCliTests extends TestSuite:
   val tests: Tests = Tests:
     test("prints root help through picocli"):
       val result = runCli("--help")
@@ -83,7 +83,7 @@ object MainTests extends TestSuite:
   private def runCli(args: String*): CliResult =
     val out = new StringWriter()
     val err = new StringWriter()
-    val commandLine = Main.commandLine()
+    val commandLine = InitkitCli.commandLine()
     commandLine.setOut(new PrintWriter(out))
     commandLine.setErr(new PrintWriter(err))
 

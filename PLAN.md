@@ -83,6 +83,14 @@ live under `app/src`, tests under `app/test/src`, and `build.mill` declares
 commands remain accurate because the module name and `app.run`/`app.test`
 targets did not change. `./mill __.compile` and `./mill __.test` both pass.
 
+Progress note, 2026-06-28: T002 split the starter shell into explicit Mill
+modules with an acyclic `app -> cli -> tui` dependency direction.
+`app/src/initkit/Main.scala` now only delegates to `initkit.cli.InitkitCli` and
+exits with its return code. Picocli command classes and CLI tests live under
+`cli/src/initkit/cli` and `cli/test/src/initkit/cli`; the existing TamboUI
+starter lives under `tui/src/initkit/tui`. `./mill __.compile`,
+`./mill __.test`, and `./mill app.run --help` all pass.
+
 Progress note, 2026-06-28: T001 updated `build.mill` with picocli, SnakeYAML
 Engine, Ox core, and sttp client4 versions from canonical Maven metadata and
 removed the direct `mainargs` dependency. The existing `info` and `tui` starter

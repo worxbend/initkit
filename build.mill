@@ -1,7 +1,7 @@
 package build
 import mill.*, scalalib.*
 
-object app extends ScalaModule {
+trait InitkitScalaModule extends ScalaModule:
   def scalaVersion = "3.8.2"
 
   def repositories = Seq(
@@ -9,21 +9,39 @@ object app extends ScalaModule {
     "https://central.sonatype.com/repository/maven-snapshots/"
   )
 
+object tui extends InitkitScalaModule:
   def mvnDeps = Seq(
-    mvn"info.picocli:picocli:4.7.7",
     mvn"com.lihaoyi::os-lib:0.11.8",
-    mvn"com.lihaoyi::upickle:4.4.3",
-    mvn"org.snakeyaml:snakeyaml-engine:3.0.1",
-    mvn"com.softwaremill.ox::core:1.0.5",
-    mvn"com.softwaremill.sttp.client4::core:4.0.25",
     mvn"dev.tamboui:tamboui-toolkit:0.5.0-SNAPSHOT",
     mvn"dev.tamboui:tamboui-jline3-backend:0.5.0-SNAPSHOT"
   )
 
-  def mainClass = Some("initkit.Main")
+object cli extends InitkitScalaModule:
+  def moduleDeps = Seq(tui)
 
-  object test extends ScalaTests {
+  def mvnDeps = Seq(
+    mvn"info.picocli:picocli:4.7.7",
+    mvn"com.lihaoyi::os-lib:0.11.8",
+    mvn"com.lihaoyi::upickle:4.4.3"
+  )
+
+  object test extends ScalaTests:
     def mvnDeps = Seq(mvn"com.lihaoyi::utest:0.9.5")
     def testFramework = "utest.runner.Framework"
-  }
-}
+
+object app extends InitkitScalaModule:
+  def moduleDeps = Seq(cli)
+
+  def mvnDeps = Seq(
+    mvn"org.snakeyaml:snakeyaml-engine:3.0.1"
+  )
+
+  def mainClass = Some("initkit.Main")
+
+  object test extends ScalaTests:
+    def mvnDeps = Seq(
+      mvn"com.lihaoyi::os-lib:0.11.8",
+      mvn"com.lihaoyi::utest:0.9.5"
+    )
+
+    def testFramework = "utest.runner.Framework"
