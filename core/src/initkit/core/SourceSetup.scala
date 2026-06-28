@@ -8,6 +8,13 @@ import scala.jdk.CollectionConverters.*
 import initkit.config.*
 import initkit.host.HostFacts
 
+/**
+ * Package-source prelude generated for the active host.
+ *
+ * Source setup is shared by selected package entries and is not persisted as a normal manifest plan
+ * entry. Skipped sections are reporting data; only `operations` and the apt update marker can
+ * produce dry-run or apply actions.
+ */
 final case class SourceSetupPlan(
     operations: Vector[SourceSetupOperation],
     skippedSections: Vector[SkippedSourceSection],
@@ -55,6 +62,12 @@ final case class SkippedSourceSection(
     reason: String
 )
 
+/**
+ * Executes source setup operations before package installation.
+ *
+ * Dry-run mode is non-mutating. Apply mode stops at the first failed source operation so package
+ * installation cannot continue after partially configured package sources.
+ */
 final class SourceSetupExecutor(
     commandExecutor: CommandExecutor,
     files: SourceSetupFiles = SourceSetupFiles.Jvm
@@ -124,6 +137,13 @@ private enum SourceSetupFailure:
     case Command(_, result) => result.exitCode
     case File(_, _, _, _)   => None
 
+/**
+ * File-write boundary for package source configuration.
+ *
+ * The `sudo` flag is an ownership signal for the caller/integration layer. The JVM implementation
+ * does not elevate privileges; it writes with the current process permissions or returns a typed
+ * file error.
+ */
 trait SourceSetupFiles:
 
   def writeFile(

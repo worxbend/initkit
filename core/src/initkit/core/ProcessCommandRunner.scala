@@ -15,6 +15,12 @@ import ox.*
 enum CommandRunMode:
   case Apply, DryRun
 
+/**
+ * Limits in-memory stdout/stderr capture.
+ *
+ * The runner continues draining the child process even after the buffer is full, retaining only the
+ * most recent bytes from each stream.
+ */
 final case class CommandStreamCaptureConfig(maxBytesPerStream: Int)
 
 object CommandStreamCaptureConfig:
@@ -22,6 +28,13 @@ object CommandStreamCaptureConfig:
   val Default: CommandStreamCaptureConfig =
     CommandStreamCaptureConfig(maxBytesPerStream = 1024 * 1024)
 
+/**
+ * JVM `ProcessBuilder` command executor.
+ *
+ * Dry-run mode bypasses sudo preparation and process startup. Apply mode owns the child process,
+ * closes stdin unless a file is configured, drains stdout/stderr concurrently, and terminates the
+ * process tree on timeout or cancellation where the JVM exposes descendants.
+ */
 final class ProcessCommandRunner(
     sudoStrategy: SudoStrategy,
     mode: CommandRunMode = CommandRunMode.Apply,

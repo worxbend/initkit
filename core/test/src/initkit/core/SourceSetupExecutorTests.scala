@@ -58,6 +58,36 @@ object SourceSetupExecutorTests extends TestSuite:
       assert(failure.message.contains("source setup command 'Add failing source' failed"))
       assert(failure.message.contains("exit code 7"))
 
+    test("apply mode stops source setup after the first failed operation"):
+      val command     = commandSpec("fail-source")
+      val destination = Path.of("/tmp/initkit/source-after-failure.list")
+      val executor    = FakeCommandExecutor(
+        Vector(FakeCommandResponse(command, CommandResultData.exited(7, duration = Duration.Zero)))
+      )
+      val files   = RecordingSourceSetupFiles()
+      val outcome = SourceSetupExecutor(executor, files).execute(
+        SourceSetupPlan(
+          Vector(
+            SourceSetupOperation.RunCommand("Add failing source", command),
+            SourceSetupOperation.WriteFile(
+              "Write later source",
+              destination,
+              "content",
+              Some("0644"),
+              sudo = false
+            )
+          ),
+          Vector.empty,
+          aptUpdateBeforeInstall = false
+        ),
+        applyPolicy,
+        sourceSetupSummary
+      )
+
+      assert(outcome.isInstanceOf[PlanOperationOutcome.Failed])
+      assert(executor.calls == Vector(command))
+      assert(files.writes.isEmpty)
+
     test("apply mode writes source files with parent directory creation and configured mode"):
       val tempDir = Files.createTempDirectory("initkit-source-setup-test-")
       try

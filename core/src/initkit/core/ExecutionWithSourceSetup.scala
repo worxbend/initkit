@@ -6,6 +6,12 @@ import initkit.config.PackageSpecDecoder
 
 object ExecutionWithSourceSetup:
 
+  /**
+   * Runs source setup as a prelude only when selected runnable package entries need it.
+   *
+   * Source setup failure returns a result without invoking the execution engine, so no package
+   * commands run and no manifest execution state is written for the stopped package entries.
+   */
   def run(
       request: ExecutionEngineRequest,
       installer: PlanOperationInstaller,

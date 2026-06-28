@@ -15,6 +15,13 @@ object ManifestLoader:
 
   private type DecodeResult[A] = Either[String, A]
 
+  /**
+   * Loads YAML into the raw manifest model without semantic validation.
+   *
+   * Callers that execute or preview plans should use `loadValidated`, or a higher-level resolver
+   * that validates after variable interpolation, so path-sensitive and kind-specific invariants are
+   * enforced before execution.
+   */
   def load(path: Path): Either[ManifestLoadError, Manifest] =
     val normalizedPath = path.toAbsolutePath.normalize()
 
@@ -22,6 +29,12 @@ object ManifestLoader:
       .flatMap(parseYaml(normalizedPath, _))
       .flatMap(decodeManifest(normalizedPath, _))
 
+  /**
+   * Loads and validates a manifest against the typed execution contracts.
+   *
+   * The returned manifest still preserves raw plan specs; package and installer specs are decoded
+   * on demand by their decoders so future executors share the same validation boundary.
+   */
   def loadValidated(path: Path): Either[ManifestLoadError, Manifest] =
     val normalizedPath = path.toAbsolutePath.normalize()
 

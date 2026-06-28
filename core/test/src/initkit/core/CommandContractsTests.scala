@@ -130,6 +130,16 @@ object CommandContractsTests extends TestSuite:
       assert(executor.calls == Vector(first, second))
       assert(executor.remainingResponses.isEmpty)
 
+    test("command success honors configured allowed exit codes"):
+      val spec = CommandSpec.direct(
+        Vector(CommandArgument("test-command")),
+        allowedExitCodes = Set(0, 2)
+      )
+      val result = CommandResultData.exited(2, duration = 1.millis).toResult(spec)
+
+      assert(result.exitCode == Some(2))
+      assert(result.succeeded)
+
     test("fake command executor reports unexpected commands without running the host"):
       val expected = CommandSpec.direct(Vector(CommandArgument("expected")))
       val actual   = CommandSpec.direct(Vector(CommandArgument("actual")))

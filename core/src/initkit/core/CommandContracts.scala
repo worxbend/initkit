@@ -7,6 +7,13 @@ import scala.collection.immutable.VectorMap
 import scala.concurrent.duration.FiniteDuration
 import scala.util.Try
 
+/**
+ * Execution contract for external commands.
+ *
+ * `Direct` invocations preserve argv boundaries and are not interpreted by a shell. Shell
+ * interpolation is available only through `CommandInvocation.Shell`. `allowedExitCodes` affects
+ * `CommandResult.succeeded`; the original process termination remains available to callers.
+ */
 final case class CommandSpec(
     invocation: CommandInvocation,
     cwd: Option[Path],
@@ -204,9 +211,20 @@ object CommandRedactor:
     val normalized = value.toLowerCase
     SensitiveKeyFragments.exists(normalized.contains)
 
+/**
+ * Boundary that owns command preparation and process execution.
+ *
+ * Implementations must preserve the invocation mode carried by `CommandSpec`; callers rely on that
+ * distinction for quoting safety and dry-run output.
+ */
 trait CommandExecutor:
   def run(spec: CommandSpec): CommandResult
 
+/**
+ * Result of an attempted command run, including failures before a process exits.
+ *
+ * `succeeded` is derived only from an exited process whose code appears in `spec.allowedExitCodes`.
+ */
 final case class CommandResult(
     spec: CommandSpec,
     termination: CommandTermination,

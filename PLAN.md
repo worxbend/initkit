@@ -1257,6 +1257,12 @@ Interaction model:
 Implementation notes:
 
 - scan the current TamboUI docs and demos before building widgets
+- specifically review the current widget demos before the polish pass:
+  <https://tamboui.dev/docs/main/demos-widgets.html#canvas>,
+  <https://tamboui.dev/docs/main/demos-widgets.html#scrollbar>,
+  <https://tamboui.dev/docs/main/demos-widgets.html#spinner>,
+  <https://tamboui.dev/docs/main/demos-widgets.html#table>, and
+  <https://tamboui.dev/docs/main/demos-widgets.html#wavetext>
 - prefer existing TamboUI widgets and layout primitives over custom rendering
 - keep execution logic outside UI classes
 - represent UI state separately from execution state
@@ -1283,6 +1289,18 @@ Visual design requirements:
 - use color deliberately for status: ready, selected, skipped, completed, running, interrupted, failed
 - give each plan kind a stable accent color or compact badge
 - render active focus with a clear border/accent, not only text color
+- use `Table` for the plan list when it improves scanning of name, kind,
+  status, selection, and execution mode without weakening keyboard ergonomics
+- use `Scrollbar` for long plan, details, and output regions so users always
+  know their position inside scrollable content
+- use `Spinner` for live execution startup, source setup, command execution,
+  downloads, and other ongoing work without exact progress
+- use `WaveText` sparingly for polished loading states, such as config loading,
+  source setup preparation, and TUI startup; do not use it for dense logs
+- use `Canvas` for compact visual summaries that benefit from drawing, such as
+  progress bars, status timelines, or a small profile/state dashboard
+- keep the screen stylish but operational: dense, readable, keyboard-first, and
+  free of decorative motion that competes with command output or failure text
 - use framed panels with compact titles, for example `[ Plan ]`, `[ Details ]`, `[ Output ]`
 - keep the layout information-dense, with no marketing copy or empty decoration
 - use symbols only when they improve scanability, for example checkbox states and status marks
@@ -1925,16 +1943,17 @@ The strict queue for subsequent implementation and validation iterations is in
 analysis iteration. The earlier queues completed the manifest loader, execution
 engine, supported installers, source setup execution, CLI/TUI wiring, TUI smoke
 coverage, formatter validation, README/docs, and final validation. The new queue
-focuses only on the remaining production-quality refactor goal and recorded
-risks, with validation before and after behavior-preserving refactors.
+focuses only on the remaining production-quality refactor goal, TUI polish, and
+recorded risks, with validation before and after behavior-preserving refactors.
 
 - T001 Run production-quality baseline validation (validation, simple)
 - T002 Audit Scala refactor targets (improvement, moderate)
 - T003 Refactor core execution boundaries (improvement, complex)
-- T004 Refactor user-facing orchestration (improvement, complex)
-- T005 Run refactor checkpoint (validation, simple)
-- T006 Tighten contracts and regression coverage (improvement, moderate)
-- T007 Run final production-quality validation (validation, simple)
+- T004 Polish TamboUI with Canvas, Scrollbar, Spinner, Table, and WaveText (improvement, complex)
+- T005 Refactor user-facing orchestration (improvement, complex)
+- T006 Run refactor checkpoint (validation, simple)
+- T007 Tighten contracts and regression coverage (improvement, moderate)
+- T008 Run final production-quality validation (validation, simple)
 
 Progress note, 2026-06-28: T013 added JSON execution state persistence in the
 `core` module. State now records manifest identity (`metadata.name`,
@@ -2484,3 +2503,17 @@ throwaway state file. `jq empty .agent-loop/tasks.json`, `jq empty
 passed. No in-scope fix was needed. Remaining risk: full-screen manual TUI
 interaction remains covered by terminal-free tests, `TuiSmokeTests`, and
 `tui --help`, not by a human-driven terminal session in this validation loop.
+
+Progress note T006 / iteration 58, 2026-06-29: tightened contract
+documentation and focused regression coverage without changing manifest shape,
+module layout, or runtime behavior. Public/widely reused contracts now document
+the raw-versus-validated manifest boundary, command argv versus shell
+semantics, accepted exit-code success rules, bounded process stream capture,
+dry-run process bypass, source setup prelude ownership, fail-fast source setup
+behavior, and the source file-write privilege boundary. Focused tests pin
+accepted nonzero command exit codes and the rule that source setup stops after
+its first failed operation without attempting later file writes. Checks passed:
+`./mill core.test`, `./mill __.compile`, and `./mill __.test`; the first
+formatter check found only edited files, then `./mill
+mill.scalalib.scalafmt/reformatAll` was run and final formatting validation was
+rerun as part of T006.
