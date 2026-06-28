@@ -1951,3 +1951,16 @@ preservation, all required row statuses, interrupt metadata, focused toggling,
 and select-all-runnable behavior. Checks passed: `./mill tui.test`,
 `./mill __.compile`, `./mill __.test`, `git diff --check`, and
 `jq empty .agent-loop/tasks.json`.
+
+Progress note, 2026-06-28: T033 replaced the starter TamboUI screen with an
+interactive plan checklist. `initkit tui` now loads, validates, resolves, and
+state-hydrates the manifest before launching the TamboUI renderer. The renderer
+uses framed terminal panes for status, checklist, details, output, and key
+hints; runnable rows use ASCII checkbox markers and can be toggled with
+Space/Enter, while skipped/completed/failed/interrupted/running rows remain
+visible but disabled with reasons. Completed entries loaded from `--state` are
+reflected in the checklist. Tests cover terminal-free text layout, focus
+movement, toggling, disabled reason rendering, and command-side model loading
+from `config.example.yaml` plus a real state file. Checks passed:
+`./mill tui.test`, `./mill cli.test`, `./mill __.compile`, `./mill __.test`,
+`git diff --check`, and `jq empty .agent-loop/tasks.json`.

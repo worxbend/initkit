@@ -83,6 +83,16 @@ object TuiViewModelTests extends TestSuite:
       assert(!focusedSkipped.rows(1).selected)
       assert(focusedSkipped.rows.head.selected)
 
+    test("focus movement updates focused row without changing selection"):
+      val moved = buildViewModel().moveFocus(2)
+      val last = moved.focusLast
+      val first = last.focusFirst
+
+      assert(moved.focusedRow.map(_.name) == Some("completed"))
+      assert(last.focusedRow.map(_.name) == Some("running"))
+      assert(first.focusedRow.map(_.name) == Some("runnable"))
+      assert(first.selectedEntryNames == Vector("runnable"))
+
     test("select all runnable selects every selectable row"):
       val viewModel = buildViewModel(
         selection = TuiSelectionInputs.fromOptions(select = Vector("does-not-match"), skip = Vector.empty)
@@ -94,6 +104,19 @@ object TuiViewModelTests extends TestSuite:
       assert(selected.rows.head.selected)
       assert(selected.selectedEntryNames == Vector("runnable"))
       assert(selected.counts.selected == 1)
+
+    test("text layout renders ASCII checklist markers and disabled reasons"):
+      val viewModel = buildViewModel()
+      val lines = TuiTextLayout.checklistLines(viewModel)
+      val textLines = lines.map(_.text)
+
+      assert(textLines.exists(_.contains("> [x] run runnable (commands)")))
+      assert(textLines.exists(_.contains("[-] skip fedora-only (commands) disabled")))
+      assert(textLines.exists(_.contains("reason: host distribution is 'ubuntu', expected 'fedora'")))
+      assert(textLines.exists(_.contains("[=] done completed (commands) disabled")))
+      assert(TuiTextLayout.statusLine(viewModel).contains("developer-workstation"))
+      assert(TuiTextLayout.detailsLines(viewModel).exists(_.contains("selected: yes")))
+      assert(TuiTextLayout.outputLines(viewModel).exists(_.contains("ready: 1 selected runnable entries")))
 
   private def buildViewModel(
       selection: TuiSelectionInputs = TuiSelectionInputs()

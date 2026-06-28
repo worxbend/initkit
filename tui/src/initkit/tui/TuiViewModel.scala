@@ -45,18 +45,40 @@ final case class TuiViewModel(
     counts: TuiPlanCounts,
     runMode: ExecutionRunMode
 ):
+  def focusedRow: Option[TuiPlanRow] =
+    focusedIndex.flatMap(index => rows.find(_.index == index))
+
   def selectedEntryNames: Vector[String] =
     rows.collect { case row if row.selected => row.name }
 
   def toggleFocused: TuiViewModel =
-    focusedIndex match
-      case Some(index) if rows.isDefinedAt(index) && rows(index).selectable =>
-        copy(rows = rows.updated(index, rows(index).copy(selected = !rows(index).selected))).refreshCounts
+    focusedPosition match
+      case Some(position) if rows(position).selectable =>
+        copy(rows = rows.updated(position, rows(position).copy(selected = !rows(position).selected))).refreshCounts
       case _ =>
         this
 
+  def moveFocus(delta: Int): TuiViewModel =
+    if rows.isEmpty then this
+    else
+      val currentPosition = focusedPosition.getOrElse(0)
+      val nextPosition = (currentPosition + delta).max(0).min(rows.size - 1)
+      copy(focusedIndex = Some(rows(nextPosition).index))
+
+  def focusFirst: TuiViewModel =
+    rows.headOption.map(row => copy(focusedIndex = Some(row.index))).getOrElse(this)
+
+  def focusLast: TuiViewModel =
+    rows.lastOption.map(row => copy(focusedIndex = Some(row.index))).getOrElse(this)
+
   def selectAllRunnable: TuiViewModel =
     copy(rows = rows.map(row => if row.selectable then row.copy(selected = true) else row)).refreshCounts
+
+  private def focusedPosition: Option[Int] =
+    focusedIndex.flatMap(index => rows.indexWhere(_.index == index) match
+      case -1       => None
+      case position => Some(position)
+    )
 
   private def refreshCounts: TuiViewModel =
     copy(counts = TuiPlanCounts.fromRows(rows))

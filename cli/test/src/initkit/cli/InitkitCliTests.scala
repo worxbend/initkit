@@ -3,11 +3,20 @@ package initkit.cli
 import java.io.{PrintWriter, StringWriter}
 import java.nio.file.Files
 import java.nio.file.Paths
+import java.time.{Clock, Instant, ZoneOffset}
+import scala.collection.immutable.VectorMap
 
+import initkit.config.Manifest
+import initkit.core.{ExecutionState, ExecutionStateStore, ManifestVariableResolver, RuntimeVariables}
+import initkit.host.HostFacts
+import initkit.tui.TuiPlanRowStatus
 import picocli.CommandLine
 import utest.*
 
 object InitkitCliTests extends TestSuite:
+  private val fixedClock: Clock =
+    Clock.fixed(Instant.parse("2026-06-28T12:00:00Z"), ZoneOffset.UTC)
+
   val tests: Tests = Tests:
     test("prints root help through picocli"):
       val result = runCli("--help")
@@ -169,6 +178,42 @@ object InitkitCliTests extends TestSuite:
       assert(result.err.contains("manifest_name=developer-workstation"))
       assert(!hasAnsi(result.err))
 
+    test("tui model loader reads example manifest and completed state"):
+      val tmp = os.temp.dir()
+      try
+        val hostFacts = HostFacts.fake(distribution = Some("ubuntu"))
+        val manifest = loadExampleManifest(hostFacts)
+        val statePath = tmp / "state.json"
+        val completedState = ExecutionState.markCompleted(
+          ExecutionState.initial(manifest, fixedClock),
+          "apt-base-cli",
+          fixedClock.instant()
+        )
+
+        requireRight(ExecutionStateStore.write(statePath.toNIO, completedState))
+
+        val viewModel = requireRight(
+          TuiCommandModelLoader.load(
+            TuiCommandModelOptions(
+              configPath = exampleConfig.toNIO,
+              statePath = Some(statePath.toNIO),
+              resetState = false,
+              dryRun = true,
+              selectedValues = Vector("apt-packages"),
+              skipValues = Vector.empty,
+              hostFacts = hostFacts,
+              clock = fixedClock
+            )
+          )
+        )
+
+        assert(viewModel.profile.name == "developer-workstation")
+        assert(viewModel.stateFile.status.toString == "Existing")
+        assert(viewModel.rows.exists(row => row.name == "apt-base-cli" && row.status == TuiPlanRowStatus.Completed))
+        assert(viewModel.rows.exists(row => row.name == "apt-containers" && row.selected))
+        assert(viewModel.rows.exists(row => row.name == "pacman-base-cli" && row.status == TuiPlanRowStatus.Skipped))
+      finally os.remove.all(tmp)
+
   private def runCli(args: String*): CliResult =
     val out = new StringWriter()
     val err = new StringWriter()
@@ -192,5 +237,23 @@ object InitkitCliTests extends TestSuite:
       .getOrElse(throw new java.lang.AssertionError("config.example.yaml fixture not found"))
 
     os.Path(path)
+
+  private def loadExampleManifest(hostFacts: HostFacts): Manifest =
+    ManifestVariableResolver
+      .loadValidatedResolved(exampleConfig.toNIO, runtimeVariables, hostFacts)
+      .fold(error => throw new java.lang.AssertionError(error.message), identity)
+
+  private def runtimeVariables: RuntimeVariables =
+    RuntimeVariables(
+      VectorMap.from(
+        Vector(
+          "HOME" -> sys.env.getOrElse("HOME", System.getProperty("user.home", "")),
+          "USER" -> sys.env.getOrElse("USER", System.getProperty("user.name", ""))
+        ).filter(_._2.nonEmpty)
+      )
+    )
+
+  private def requireRight[A](value: Either[?, A]): A =
+    value.fold(error => throw new java.lang.AssertionError(error.toString), identity)
 
   private final case class CliResult(exitCode: Int, out: String, err: String)
