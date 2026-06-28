@@ -1770,3 +1770,18 @@ Correction resolved, 2026-06-28: package-manager executors were audited against
 the Phase 10 itemized-install rule. The implementation now generates one install
 command per package/group/app item and reports partial package-entry failure
 after attempting all item commands.
+
+Progress note, 2026-06-28: T021 added the generic commands executor in the
+`core` module. `CommandsExecutor` evaluates each command item's `when`
+condition against injected `HostFacts`, skips only unmatched items, and turns
+`run` text into explicit shell-mode `CommandSpec.shell` invocations without
+splitting the command string. Command items execute sequentially through the
+injected `CommandExecutor`; failed commands honor the plan-entry `failFast`
+setting and report an aggregate failure. Sudo mode is item-aware:
+`sudo: true` requests sudo, `sudo: false` disables it, and omitted `sudo`
+inherits `ExecutionPolicy.requireSudo`. Dry-run returns command-text previews
+and skip messages without calling the executor. `PackageManagerInstallers` now
+delegates `commands` operations to this executor. Checks passed:
+`./mill core.test.testOnly initkit.core.CommandsExecutorTests`,
+`./mill core.test`, `./mill __.compile`, `./mill __.test`,
+`git diff --check`, and `jq empty .agent-loop/tasks.json`.

@@ -3,10 +3,12 @@ package initkit.core
 import scala.collection.immutable.VectorMap
 
 import initkit.config.*
+import initkit.host.HostFacts
 
 final class PackageManagerInstallers(
     commandExecutor: CommandExecutor,
-    aptUpdateBeforeInstall: Boolean = false
+    aptUpdateBeforeInstall: Boolean = false,
+    hostFacts: HostFacts = HostFacts.fake()
 ) extends PlanOperationInstaller:
   override def installApt(
       operation: PackagePlanOperation[PackageSpec.Apt],
@@ -102,7 +104,7 @@ final class PackageManagerInstallers(
       operation: InstallerPlanOperation[InstallerSpec.Commands],
       policy: ExecutionPolicy
   ): PlanOperationOutcome =
-    unsupported(operation.summary)
+    new CommandsExecutor(commandExecutor, hostFacts).install(operation, policy)
 
   private def installPackageCommands(
       summary: PlanOperationSummary,
