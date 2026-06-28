@@ -2009,3 +2009,12 @@ Focused `./mill tui.test`, `git diff --check`, and `jq empty
 .agent-loop/tasks.json` also pass. `tui --help` prints picocli usage and exits
 without opening the full-screen UI. Formatter validation remains unavailable
 because no local `scalafmt` executable or Mill formatter target is configured.
+
+Progress note, 2026-06-28: T036 replaced the starter README with usage
+documentation for the current initkit runner. The README now documents
+`config.example.yaml`, manifest structure, CLI `apply` workflow, TUI checklist
+workflow, supported package and installer plan kinds, dry-run behavior,
+checkbox selection, variable interpolation, host detection, the informational
+role of `spec.target.os`, state path selection, interrupt/resume examples with
+`--state`, and the current safety model. Recursive documentation checkpoint
+checks passed: `./mill __.compile` and `./mill __.test`.
