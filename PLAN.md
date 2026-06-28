@@ -200,6 +200,16 @@ formatter validation remains unavailable. No source fix was needed; remaining
 risk is limited to future tasks wiring the resolved manifest into selection,
 state, and execution behavior.
 
+Progress note, 2026-06-28: T011 added shared plan selection in the `core`
+module. `PlanSelector` applies normalized `--only` and `--skip` selectors
+against plan entry names or kinds, evaluates `when` conditions through
+`ConditionEvaluator`, treats completed entry names as state placeholders, and
+returns manifest-order runnable entries plus skipped entries with structured
+user-facing reasons. Focused tests cover name/kind selection, skip filtering,
+condition skips, completed placeholders, and order preservation. Checks passed:
+`./mill core.test`, `./mill __.compile`, `./mill __.test`, and
+`git diff --check`.
+
 Validation checkpoint, 2026-06-28: `./mill app.compile` and `./mill app.test`
 were rerun for the completed T001-T003 chunk. Daemon-mode Mill cannot start its
 localhost server in this sandbox (`java.net.SocketException: Operation not
