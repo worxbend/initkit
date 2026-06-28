@@ -975,6 +975,9 @@ Behavior:
 - `locks` prevent conflicting entries or tasks from running at the same time
 - `continueOnError` comes from global policy unless an entry override is added later
 - timeouts, retries, and cancellation should use Ox primitives where applicable
+- package-manager plan entries are a special case: even in `sequential` mode,
+  each package in `spec.install` is its own operation and sibling packages must
+  continue after an individual package failure
 
 For the first version, top-level entries can remain sequential even if locks are
 implemented as no-ops. Keep the lock field in the model so parallel top-level
@@ -985,7 +988,9 @@ Acceptance criteria:
 - binary downloads can run in parallel
 - parallel entries use Ox structured concurrency and bounded concurrency
 - package manager entries run sequentially
-- failures stop execution unless `continueOnError` is true
+- non-package failures stop execution unless `continueOnError` is true
+- package-manager item failures do not prevent later packages in the same
+  `install` list from being attempted
 - dry-run prints commands and file changes without applying them
 
 ## Phase 6: State And Interrupts
@@ -1281,21 +1286,69 @@ Acceptance criteria:
 
 Implement one executor per package manager kind.
 
-Commands:
+Critical package-list behavior:
 
-- `apt-packages`: `apt-get update`, `apt-get install -y ...`
-- `pacman-packages`: `pacman -Sy --needed ...`
-- `dnf-packages`: `dnf install -y ...`
-- `zypper-packages`: `zypper refresh`, `zypper install -y ...`
-- `flatpak-packages`: `flatpak install -y <remote> ...`
-- `snap-packages`: `snap install ...`, with `--classic` where configured
+- never generate one bulk install command for a package list
+- every item in `spec.install` must become a separate command execution
+- an invalid package name, unavailable group, or failed package install must
+  mark that item as failed but must not prevent later `spec.install` items from
+  being attempted
+- after all package items are attempted, the plan entry should report partial
+  failure if any required package item failed
+- global `continueOnError` controls whether execution continues to the next
+  top-level plan entry after that aggregate package-entry result
+- state and reporting should include package-level results, including package
+  name, generated command, exit code, and failure summary
+- dry-run should show one command per package item in the same order that apply
+  mode would execute them
+
+For example, this DNF list:
+
+```yaml
+spec:
+  install:
+    - "@development-tools"
+    - ca-certificates
+    - curl
+    - gnupg2
+    - jq
+```
+
+must execute as separate commands:
+
+```bash
+sudo dnf install -y "@development-tools"
+sudo dnf install -y ca-certificates
+sudo dnf install -y curl
+sudo dnf install -y gnupg2
+sudo dnf install -y jq
+```
+
+If `gnupg2` is the wrong package name on that system, `jq` must still be
+attempted. This rule applies to all package-manager kinds, not only DNF.
+
+Command templates:
+
+- `apt-packages`: optional `apt-get update` once, then `apt-get install -y <package>` once per package item
+- `pacman-packages`: `pacman -S --needed --noconfirm <package>` once per package item
+- `dnf-packages`: `dnf install -y <package-or-group>` once per package item
+- `zypper-packages`: optional `zypper refresh` once, then `zypper install --non-interactive <package>` once per package item
+- `flatpak-packages`: `flatpak install -y <remote> <package>` once per package item
+- `snap-packages`: `snap install <package>`, with `--classic` where configured, once per package item
+
+Do not put package-manager synchronization flags that refresh repositories on
+every package item unless that package manager requires it. For pacman, prefer
+separate source/sync setup or a single sync step before item installs over
+`pacman -Sy` repeated for every package.
 
 Acceptance criteria:
 
-- generated commands match the manifest
+- generated commands match the manifest and contain exactly one install package/group/app per command
 - package managers use sudo by default when `requireSudo` is true
 - dry-run never mutates package state
 - tests assert command generation for each package manager
+- tests cover an invalid middle package item and assert later items are still attempted
+- tests assert the final package entry result reports partial failure when one or more item installs fail
 
 ## Phase 11: Binary Downloads
 
@@ -1693,3 +1746,27 @@ Additional validation passed: `git diff --check`, `jq empty
 `/tmp/initkit-validation-23-help-1782666238.log`). No source fix was needed.
 Formatter validation remains unavailable because `.scalafmt.conf` exists but no
 local `scalafmt` executable or Mill formatting target is configured.
+
+Progress note, 2026-06-28: T020 added package-manager executors in the `core`
+module. `PackageManagerInstallers` now generates direct, noninteractive
+`CommandSpec`s for apt, pacman, dnf, zypper, flatpak, and snap package plan
+entries, applies `requireSudo` through `SudoMode.Required`, executes package
+commands sequentially in apply mode, and returns dry-run command previews
+without calling the command executor. Apt commands set
+`DEBIAN_FRONTEND=noninteractive`; pacman includes `--noconfirm`; zypper uses
+`--non-interactive`; dnf and flatpak use `-y`. Package installs are itemized:
+setup/sync/refresh commands run once where configured, then each
+`spec.install` package/group/app is attempted with its own command so a failed
+middle item does not prevent later items from running. Snap emits one command
+per package so `--classic` applies only where configured. Focused tests load
+`config.example.yaml` and assert generated commands for every package manager
+kind, sudo behavior, dry-run no-mutation behavior, apply-mode command execution
+through the fake executor, and aggregate failure reporting when an item command
+fails. Checks passed: `./mill core.test.testOnly
+initkit.core.PackageManagerInstallersTests`, `./mill __.compile`, and
+`./mill __.test`.
+
+Correction resolved, 2026-06-28: package-manager executors were audited against
+the Phase 10 itemized-install rule. The implementation now generates one install
+command per package/group/app item and reports partial package-entry failure
+after attempting all item commands.
