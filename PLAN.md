@@ -1900,3 +1900,25 @@ plain-output styling with `--color auto|always|never`, `--no-color`, and
 preserving stdout, and `--debug-log` writes those diagnostics to a created file
 path. Checks passed: `./mill cli.test`, `./mill __.compile`, `./mill __.test`,
 and `./mill app.run apply --config config.example.yaml --dry-run`.
+
+Validation checkpoint T030 / VALIDATION-34, 2026-06-28: the first CLI
+milestone was validated after T029. Mill discovery still resolves recursive
+compile targets for `app`, `cli`, `config`, `core`, `host`, and `tui`, plus
+recursive test targets for `cli.test`, `config.test`, `core.test`, and
+`host.test`. The configured checks now pass: `./mill __.compile` (log
+`/tmp/initkit-validation-34-compile-final-1782670087.log`) and
+`./mill __.test` (log `/tmp/initkit-validation-34-test-final-1782670091.log`).
+The milestone dry-run smoke also passes:
+`./mill app.run apply --config config.example.yaml --dry-run` (log
+`/tmp/initkit-validation-34-apply-dry-run-final-1782670100.log`), and its
+output includes representative package, interrupt, binary-download,
+shell-script, Nerd Fonts, dotfiles, and command operations. Validation found a
+dry-run state mutation bug: condition/filter-skipped entries were persisted to
+the state file even in dry-run mode. `ExecutionEngine` now reports skipped
+events during dry-run without marking or writing state, and regression coverage
+was added in the engine and CLI tests. A throwaway-state smoke confirms
+`--dry-run --state /tmp/initkit-validation-34-dry-run-state.json` does not
+create that state file. `git diff --check` and `jq empty
+.agent-loop/tasks.json` pass. Formatter validation remains unavailable because
+`.scalafmt.conf` exists but no local `scalafmt` executable or Mill formatting
+target is configured.

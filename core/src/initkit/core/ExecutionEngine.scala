@@ -118,6 +118,8 @@ object ExecutionEngine:
 
         if skipped.reasons.exists(_.isInstanceOf[PlanSkipReason.AlreadyCompleted]) then
           Right(EngineStep(state, events, stopExitCode = None))
+        else if request.policy.mode == ExecutionRunMode.DryRun then
+          Right(EngineStep(state, events, stopExitCode = None))
         else
           val nextState = ExecutionState.markSkipped(state, summary.name, skipped.userFacingReasons, at)
           writeState(request.statePath, nextState, stateWriter).map(_ =>

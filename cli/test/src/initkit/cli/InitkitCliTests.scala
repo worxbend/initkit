@@ -82,6 +82,7 @@ object InitkitCliTests extends TestSuite:
         assert(result.out.contains("Operations"))
         assert(result.out.contains("Summary"))
         assert(!hasAnsi(result.out))
+        assert(!os.exists(state))
       finally os.remove.all(tmp)
 
     test("apply color never suppresses ANSI escapes"):

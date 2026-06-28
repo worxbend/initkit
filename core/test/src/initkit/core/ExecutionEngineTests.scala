@@ -119,9 +119,14 @@ object ExecutionEngineTests extends TestSuite:
       assert(result.state.nextPlanEntry.isEmpty)
 
     test("dry-run emits operation data without completing or writing state"):
-      val testManifest = manifest(Vector(commandEntry("preview")))
+      val testManifest = manifest(
+        Vector(
+          commandEntry("fedora-only", distribution = Some(MatchExpression.Exact("fedora"))),
+          commandEntry("preview")
+        )
+      )
       val state = ExecutionState.initial(testManifest, fixedClock)
-      val operationSummary = summary("preview", index = 0)
+      val operationSummary = summary("preview", index = 1)
       val dryRunData = DryRunOperationData(
         operation = operationSummary,
         actions = Vector(DryRunAction.Command(Vector("echo", "preview"), None, sudo = false, None))
@@ -138,6 +143,7 @@ object ExecutionEngineTests extends TestSuite:
       )
 
       assert(result.exitCode == 0)
+      assert(skippedEventNames(result.events) == Vector("fedora-only"))
       assert(result.events.collect { case PlanEvent.DryRunOperation(_, data, _) => data } == Vector(dryRunData))
       assert(ExecutionState.completedNames(result.state).isEmpty)
       assert(stateWriter.writes.isEmpty)
