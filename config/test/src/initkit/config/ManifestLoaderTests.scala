@@ -70,7 +70,7 @@ object ManifestLoaderTests extends TestSuite:
       case Right(manifest) => manifest
       case Left(error)     => fail(error.message)
 
-  private def exampleConfigPath: Path =
+  def exampleConfigPath: Path =
     Iterator
       .iterate(os.pwd.toNIO.toAbsolutePath.normalize)(_.getParent)
       .takeWhile(_ != null)

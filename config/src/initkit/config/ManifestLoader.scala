@@ -21,6 +21,16 @@ object ManifestLoader:
       .flatMap(parseYaml(normalizedPath, _))
       .flatMap(decodeManifest(normalizedPath, _))
 
+  def loadValidated(path: Path): Either[ManifestLoadError, Manifest] =
+    val normalizedPath = path.toAbsolutePath.normalize()
+
+    load(normalizedPath).flatMap { manifest =>
+      ManifestValidator
+        .validate(manifest, Some(normalizedPath))
+        .left
+        .map(errors => ValidationFailure(normalizedPath, errors))
+    }
+
   private def readYaml(path: Path): Either[ManifestLoadError, String] =
     Try(Files.readString(path)).toEither.left.map(error => ReadFailure(path, safeMessage(error)))
 

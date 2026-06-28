@@ -117,6 +117,16 @@ error check that asserts the loader returns a parse failure without
 stacktrace-shaped output. `./mill __.compile` and `./mill __.test` both pass
 for the current `config`, `app`, `cli`, and `tui` module graph.
 
+Progress note, 2026-06-28: T004 added semantic manifest validation in the
+`config` module. `ManifestLoader.loadValidated` now returns aggregated
+`ValidationFailure` errors for unsupported `apiVersion`/top-level `kind`,
+missing and duplicate plan names, unknown plan kinds, invalid execution modes
+and `maxConcurrency`, package entries with empty `install` lists, unsupported
+binary checksum algorithms, and invalid interrupt state settings including
+state-file reuse of the manifest path. Focused validator tests cover both
+single-rule failures and multi-error aggregation. `./mill __.compile` and
+`./mill __.test` pass.
+
 Validation checkpoint, 2026-06-28: `./mill app.compile` and `./mill app.test`
 were rerun for the completed T001-T003 chunk. Daemon-mode Mill cannot start its
 localhost server in this sandbox (`java.net.SocketException: Operation not
