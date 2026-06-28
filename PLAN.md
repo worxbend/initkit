@@ -1607,3 +1607,17 @@ loading rejects stale manifest names or fingerprints unless reset-state behavior
 is requested. Focused tests cover write/read, resume lookup, stale mismatch, and
 reset initialization. `./mill __.compile`, `./mill __.test`,
 `git diff --check`, and `jq empty .agent-loop/tasks.json` pass.
+
+Progress note, 2026-06-28: T014 added shared execution contracts in the `core`
+module. `ExecutionPolicy` and per-plan-entry execution policy now normalize
+manifest policy defaults and CLI dry-run override intent. `PlanOperation`
+decodes selected entries into typed package or installer operation variants
+using the existing `PackageSpecDecoder` and `InstallerSpecDecoder`, and
+`PlanOperationInstaller` dispatches to typed methods for every supported plan
+kind instead of exposing raw YAML to executors. `PlanEvent` now represents
+scheduled, started, skipped, completed, failed, interrupted, and dry-run
+operation events; `PlanResult` reports completed, skipped, failed,
+interrupted, and remaining operation counts. Focused tests cover typed
+dispatch, representative event construction, dry-run operation data, and result
+counts. `./mill core.test`, `./mill __.compile`, `./mill __.test`,
+`git diff --check`, and `jq empty .agent-loop/tasks.json` pass.
