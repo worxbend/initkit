@@ -1785,3 +1785,14 @@ delegates `commands` operations to this executor. Checks passed:
 `./mill core.test.testOnly initkit.core.CommandsExecutorTests`,
 `./mill core.test`, `./mill __.compile`, `./mill __.test`,
 `git diff --check`, and `jq empty .agent-loop/tasks.json`.
+
+Validation checkpoint T022 / VALIDATION-26, 2026-06-28: command contracts,
+process execution, source setup generation, package executors, and generic
+commands were revalidated before download and installer work continues. The
+configured recursive checks passed: `./mill __.compile` (log
+`/tmp/initkit-validation-26-compile-1782667255.log`) and `./mill __.test`
+(log `/tmp/initkit-validation-26-test-1782667258.log`). The test audit
+confirmed package-manager, sudo, and URL-shaped paths use fake executors,
+dry-run assertions, pure command-generation assertions, or harmless local
+process-runner fixtures; no test invokes real package managers, real sudo, or
+live network downloads. No source fix was needed.
