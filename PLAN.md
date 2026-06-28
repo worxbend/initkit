@@ -158,6 +158,15 @@ ran the CLI suites plus `ManifestLoaderTests`, `ManifestValidatorTests`,
 `scalafmt` executable or Mill formatting target is configured, so formatter
 validation remains unavailable in this workspace.
 
+Progress note, 2026-06-28: T008 added a standalone `host` module for host fact
+detection. `HostDetector` reads Linux distribution fields from `/etc/os-release`
+when available, normalizes common JVM architecture names to values such as
+`amd64` and `arm64`, and checks command availability by probing executable files
+under `PATH` without invoking package managers or other commands. Tests cover
+representative os-release data, architecture aliases, PATH lookup, and fake host
+facts for later condition evaluation. `./mill __.compile`, `./mill __.test`,
+and `git diff --check` pass.
+
 Validation checkpoint, 2026-06-28: `./mill app.compile` and `./mill app.test`
 were rerun for the completed T001-T003 chunk. Daemon-mode Mill cannot start its
 localhost server in this sandbox (`java.net.SocketException: Operation not

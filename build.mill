@@ -42,6 +42,11 @@ object config extends InitkitScalaModule:
 
     def testFramework = "utest.runner.Framework"
 
+object host extends InitkitScalaModule:
+  object test extends ScalaTests:
+    def mvnDeps = Seq(mvn"com.lihaoyi::utest:0.9.5")
+    def testFramework = "utest.runner.Framework"
+
 object app extends InitkitScalaModule:
   def moduleDeps = Seq(cli)
 
