@@ -1886,3 +1886,17 @@ the command executor. Focused tests cover command generation, optional update
 omission, dry-run visibility, clone-if-missing behavior with temp directories,
 preview-before-apply ordering, and clear missing-config failure after checkout.
 Checks passed: `./mill core.test`, `./mill __.compile`, and `./mill __.test`.
+
+Progress note, 2026-06-28: T029 wired plain CLI `apply` through the manifest
+pipeline and execution engine. The command now loads, validates, resolves,
+selects, and dry-runs `config.example.yaml`, constructing live host facts,
+state loading, source setup previews, `PackageManagerInstallers`, and
+`ExecutionEngine` requests from CLI options. Plain output reports manifest
+name, config, mode, host facts, state path/resume point, selected entries,
+skipped reasons, source setup operations, per-plan dry-run actions, and a final
+summary. The CLI module now depends on `core` and uses `fansi` for centralized
+plain-output styling with `--color auto|always|never`, `--no-color`, and
+`NO_COLOR` handling. `--debug` writes redacted diagnostics to stderr while
+preserving stdout, and `--debug-log` writes those diagnostics to a created file
+path. Checks passed: `./mill cli.test`, `./mill __.compile`, `./mill __.test`,
+and `./mill app.run apply --config config.example.yaml --dry-run`.

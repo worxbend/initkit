@@ -1,6 +1,8 @@
 package initkit.cli
 
 import java.io.{PrintWriter, StringWriter}
+import java.nio.file.Files
+import java.nio.file.Paths
 
 import picocli.CommandLine
 import utest.*
@@ -48,12 +50,11 @@ object InitkitCliTests extends TestSuite:
         assert(!result.err.contains("at initkit."))
       finally os.remove.all(tmp)
 
-    test("apply parses shared and selection options"):
+    test("apply dry-runs the example config with shared and selection options"):
       val tmp = os.temp.dir()
       try
-        val config = tmp / "config.yaml"
         val state = tmp / "state.json"
-        os.write(config, "apiVersion: initkit.io/v1alpha1\n")
+        val config = exampleConfig
 
         val result = runCli(
           "apply",
@@ -71,14 +72,101 @@ object InitkitCliTests extends TestSuite:
         )
 
         assert(result.exitCode == CommandLine.ExitCode.OK)
+        assert(result.out.contains("manifest: developer-workstation"))
         assert(result.out.contains(s"config: ${config.toNIO.toAbsolutePath.normalize}"))
         assert(result.out.contains(s"state: ${state.toNIO.toAbsolutePath.normalize}"))
-        assert(result.out.contains("reset-state: true"))
-        assert(result.out.contains("dry-run: true"))
-        assert(result.out.contains("yes: true"))
-        assert(result.out.contains("only: apt-base-cli"))
-        assert(result.out.contains("skip: snap-packages"))
+        assert(result.out.contains("mode: dry-run"))
+        assert(result.out.contains("host:"))
+        assert(result.out.contains("Selected entries"))
+        assert(result.out.contains("Skipped entries"))
+        assert(result.out.contains("Operations"))
+        assert(result.out.contains("Summary"))
+        assert(!hasAnsi(result.out))
       finally os.remove.all(tmp)
+
+    test("apply color never suppresses ANSI escapes"):
+      val result = runCli("apply", "--config", exampleConfig.toString, "--dry-run", "--color", "never", "--only", "post-install")
+
+      assert(result.exitCode == CommandLine.ExitCode.OK)
+      assert(!hasAnsi(result.out))
+
+    test("apply no-color suppresses forced ANSI escapes"):
+      val result = runCli(
+        "apply",
+        "--config",
+        exampleConfig.toString,
+        "--dry-run",
+        "--color",
+        "always",
+        "--no-color",
+        "--only",
+        "post-install"
+      )
+
+      assert(result.exitCode == CommandLine.ExitCode.OK)
+      assert(!hasAnsi(result.out))
+
+    test("apply color always emits fansi styled output"):
+      val result = runCli("apply", "--config", exampleConfig.toString, "--dry-run", "--color", "always", "--only", "post-install")
+
+      assert(result.exitCode == CommandLine.ExitCode.OK)
+      assert(hasAnsi(result.out))
+
+    test("NO_COLOR disables auto color"):
+      val settings = CliColorSettings.resolve(
+        mode = CliColorMode.Auto,
+        noColor = false,
+        noColorEnvironment = true,
+        stdoutIsTerminal = true
+      )
+
+      assert(!settings.enabled)
+
+    test("debug log adds diagnostics without replacing stdout"):
+      val tmp = os.temp.dir()
+      try
+        val debugLog = tmp / "debug.log"
+
+        val result = runCli(
+          "apply",
+          "--config",
+          exampleConfig.toString,
+          "--dry-run",
+          "--only",
+          "post-install",
+          "--debug-log",
+          debugLog.toString
+        )
+
+        assert(result.exitCode == CommandLine.ExitCode.OK)
+        assert(result.out.contains("manifest: developer-workstation"))
+        assert(result.out.contains("Summary"))
+        assert(os.exists(debugLog))
+
+        val debug = os.read(debugLog)
+        assert(debug.contains("manifest_name=developer-workstation"))
+        assert(debug.contains("dry_run=true"))
+        assert(debug.contains("events="))
+        assert(!hasAnsi(debug))
+      finally os.remove.all(tmp)
+
+    test("debug writes diagnostics to stderr without replacing stdout"):
+      val result = runCli(
+        "apply",
+        "--config",
+        exampleConfig.toString,
+        "--dry-run",
+        "--only",
+        "post-install",
+        "--debug"
+      )
+
+      assert(result.exitCode == CommandLine.ExitCode.OK)
+      assert(result.out.contains("manifest: developer-workstation"))
+      assert(result.out.contains("Summary"))
+      assert(result.err.contains("apply command started"))
+      assert(result.err.contains("manifest_name=developer-workstation"))
+      assert(!hasAnsi(result.err))
 
   private def runCli(args: String*): CliResult =
     val out = new StringWriter()
@@ -90,5 +178,18 @@ object InitkitCliTests extends TestSuite:
     val exitCode = commandLine.execute(args*)
 
     CliResult(exitCode, out.toString, err.toString)
+
+  private def hasAnsi(value: String): Boolean =
+    value.contains("\u001b[")
+
+  private def exampleConfig: os.Path =
+    val path = Iterator
+      .iterate(Paths.get("").toAbsolutePath.normalize())(_.getParent)
+      .takeWhile(_ != null)
+      .map(_.resolve("config.example.yaml"))
+      .find(Files.isRegularFile(_))
+      .getOrElse(throw new java.lang.AssertionError("config.example.yaml fixture not found"))
+
+    os.Path(path)
 
   private final case class CliResult(exitCode: Int, out: String, err: String)

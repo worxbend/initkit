@@ -17,9 +17,10 @@ object tui extends InitkitScalaModule:
   )
 
 object cli extends InitkitScalaModule:
-  def moduleDeps = Seq(tui)
+  def moduleDeps = Seq(core, tui)
 
   def mvnDeps = Seq(
+    mvn"com.lihaoyi::fansi:0.5.1",
     mvn"info.picocli:picocli:4.7.7",
     mvn"com.lihaoyi::os-lib:0.11.8",
     mvn"com.lihaoyi::upickle:4.4.3"
