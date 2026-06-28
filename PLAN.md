@@ -2045,3 +2045,15 @@ so apt entries include `apt-get update` before installs. Checks passed:
 /tmp/initkit-source-setup-dry-run-state.json`; the throwaway dry-run state file
 was not created. `git diff --check` and `jq empty .agent-loop/tasks.json` also
 passed.
+
+Validation checkpoint refreshed T003, 2026-06-28: the source setup execution
+chunk from refreshed T001 and T002 was revalidated without runtime source
+changes. Mill discovery passed for `./mill --no-daemon resolve _`; recursive
+compile and tests passed with the checked-in Mill wrapper. The dry-run smoke
+`./mill app.run apply --config config.example.yaml --dry-run --state
+/tmp/initkit-source-setup-checkpoint-state.json` exited successfully, previewed
+source setup before package operations, and did not create the throwaway state
+file. `jq empty .agent-loop/tasks.json`, `jq empty .agent-loop/config.json`,
+`git diff --check`, and a conflict-marker scan all passed. No regression fix
+was needed. Remaining risk is limited to future TUI smoke and formatter
+validation tasks already queued after this checkpoint.
