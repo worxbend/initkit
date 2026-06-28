@@ -1597,3 +1597,13 @@ manifest pipeline.
 - T035 Run TUI checkpoint (validation, simple)
 - T036 Document initkit usage (chore, moderate)
 - T037 Run final validation (validation, simple)
+
+Progress note, 2026-06-28: T013 added JSON execution state persistence in the
+`core` module. State now records manifest identity (`metadata.name`,
+`apiVersion`, `kind`, and a SHA-256 fingerprint), `createdAt`/`updatedAt`,
+`lastCompleted`, `nextPlanEntry`, and per-entry status records. State writes
+create parent directories and write through a sibling temp file before rename;
+loading rejects stale manifest names or fingerprints unless reset-state behavior
+is requested. Focused tests cover write/read, resume lookup, stale mismatch, and
+reset initialization. `./mill __.compile`, `./mill __.test`,
+`git diff --check`, and `jq empty .agent-loop/tasks.json` pass.
