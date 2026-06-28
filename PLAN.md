@@ -2435,3 +2435,18 @@ context construction, reduce duplicated redacted reporting/log formatting, and
 clarify TamboUI render-thread state ownership. No production behavior changed;
 the next implementation tasks should keep module layout, manifest shape,
 `PlanOperation` public contracts, state JSON, and installer semantics stable.
+
+Progress note T003, 2026-06-29: refactored the core execution path without
+changing manifest parsing, plan selection semantics, state JSON, dry-run,
+interrupt, or installer behavior. `SelectedPlanEntries` now owns the completed
+state merge, selected-entry ordering, and summary extraction that had been
+duplicated between `ExecutionEngine` and `ExecutionWithSourceSetup`; source
+setup now uses that shared selection view to decide whether runnable package
+entries require setup. `PackageManagerInstallers` keeps the public typed
+installer methods and dispatch contract, but package methods share one private
+package-operation helper. Focused coverage in `SelectedPlanEntriesTests` pins
+completed-state merging, manifest-order preservation, and the rule that skipped
+package entries do not trigger source setup. Checks passed: `./mill core.test`,
+`./mill __.compile`, `./mill __.test`,
+`./mill mill.scalalib.scalafmt/checkFormatAll`, `git diff --check`, and
+`jq empty .agent-loop/tasks.json`.

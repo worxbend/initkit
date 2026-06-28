@@ -49,20 +49,11 @@ object ExecutionEngine:
       stateWriter: ExecutionStateWriter,
       clock: Clock
   ): Either[ExecutionEngineError, ExecutionEngineResult] =
-    val selected = orderedSelection(request)
+    val selected = SelectedPlanEntries.fromRequest(request)
     executeSelectedEntries(selected, request, installer, stateWriter, clock)
 
-  private def orderedSelection(request: ExecutionEngineRequest): Vector[SelectedExecutionEntry] =
-    val requestWithCompleted = request.selection.copy(
-      completed = request.selection.completed ++ ExecutionState.completedNames(request.state)
-    )
-    val selection = PlanSelector.select(request.manifest, requestWithCompleted, request.hostFacts)
-
-    (selection.skipped.map(SelectedExecutionEntry.Skipped.apply) ++
-      selection.runnable.map(SelectedExecutionEntry.Runnable.apply)).sortBy(_.index)
-
   private def executeSelectedEntries(
-      selected: Vector[SelectedExecutionEntry],
+      selected: SelectedPlanEntries,
       request: ExecutionEngineRequest,
       installer: PlanOperationInstaller,
       stateWriter: ExecutionStateWriter,
@@ -76,9 +67,9 @@ object ExecutionEngine:
 
     while index < selected.size && stoppedAt.isEmpty do
       val outcome = selected(index) match
-        case SelectedExecutionEntry.Skipped(entry) =>
+        case SelectedPlanEntry.Skipped(entry) =>
           handleSkipped(entry, state, request, stateWriter, clock)
-        case SelectedExecutionEntry.Runnable(entry) =>
+        case SelectedPlanEntry.Runnable(entry) =>
           handleRunnable(entry, state, request, installer, stateWriter, clock)
 
       outcome match
@@ -93,7 +84,7 @@ object ExecutionEngine:
       index = index + 1
 
     val remaining = stoppedAt.toVector.flatMap: stoppedIndex =>
-      selected.filter(_.index > stoppedIndex).flatMap(summaryOption)
+      selected.afterIndex(stoppedIndex).summaries
     val result   = PlanResult.fromEvents(events, remaining)
     val exitCode = stopExitCode.getOrElse(exitCodeForCompletedRun(result))
 
@@ -278,21 +269,6 @@ object ExecutionEngine:
   private def exitCodeForCompletedRun(result: PlanResult): Int =
     if result.failed.nonEmpty then FailureExitCode
     else SuccessExitCode
-
-  private def summaryOption(entry: SelectedExecutionEntry): Option[PlanOperationSummary] =
-    val planEntry = entry match
-      case SelectedExecutionEntry.Runnable(runnable) => runnable.entry
-      case SelectedExecutionEntry.Skipped(skipped)   => skipped.entry
-
-    PlanOperationSummary.fromPlanEntry(entry.index, planEntry).toOption
-
-private enum SelectedExecutionEntry:
-  case Runnable(entry: RunnablePlanEntry)
-  case Skipped(entry: SkippedPlanEntry)
-
-  def index: Int = this match
-    case Runnable(entry) => entry.index
-    case Skipped(entry)  => entry.index
 
 private final case class EngineStep(
     state: ExecutionState,

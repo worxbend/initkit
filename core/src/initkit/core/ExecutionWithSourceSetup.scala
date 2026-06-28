@@ -14,7 +14,9 @@ object ExecutionWithSourceSetup:
       stateWriter: ExecutionStateWriter,
       clock: Clock
   ): Either[ExecutionEngineError, ExecutionEngineResult] =
-    if shouldExecuteSourceSetup(request, sourceSetup) then
+    val selected = SelectedPlanEntries.fromRequest(request)
+
+    if shouldExecuteSourceSetup(selected, sourceSetup, request.policy) then
       executeSourceSetup(sourceSetup, sourceSetupExecutor, request.policy, clock) match
         case SourceSetupStep.Continue(events) => ExecutionEngine
             .run(request, installer, stateWriter, clock)
@@ -23,40 +25,23 @@ object ExecutionWithSourceSetup:
             ExecutionEngineResult(
               events = events,
               state = request.state,
-              result = PlanResult.fromEvents(events, selectedSummaries(request)),
+              result = PlanResult.fromEvents(events, selected.summaries),
               exitCode = exitCode
             )
           )
     else ExecutionEngine.run(request, installer, stateWriter, clock)
 
   private def shouldExecuteSourceSetup(
-      request: ExecutionEngineRequest,
-      sourceSetup: SourceSetupPlan
-  ): Boolean = selectedHasPackageEntry(request) &&
+      selected: SelectedPlanEntries,
+      sourceSetup: SourceSetupPlan,
+      policy: ExecutionPolicy
+  ): Boolean = selectedHasPackageEntry(selected) &&
     (sourceSetup.operations.nonEmpty ||
-      request.policy.mode == ExecutionRunMode.DryRun && sourceSetup.aptUpdateBeforeInstall)
+      policy.mode == ExecutionRunMode.DryRun && sourceSetup.aptUpdateBeforeInstall)
 
-  private def selectedHasPackageEntry(request: ExecutionEngineRequest): Boolean =
-    selectedEntries(request).exists:
-      case SelectedSourceSetupEntry.Runnable(entry) =>
-        entry.entry.kind.exists(PackageSpecDecoder.isSourceSetupPackageKind)
-      case SelectedSourceSetupEntry.Skipped(_) => false
-
-  private def selectedSummaries(request: ExecutionEngineRequest): Vector[PlanOperationSummary] =
-    selectedEntries(request).flatMap:
-      case SelectedSourceSetupEntry.Runnable(entry) =>
-        PlanOperationSummary.fromPlanEntry(entry.index, entry.entry).toOption
-      case SelectedSourceSetupEntry.Skipped(entry) =>
-        PlanOperationSummary.fromPlanEntry(entry.index, entry.entry).toOption
-
-  private def selectedEntries(request: ExecutionEngineRequest): Vector[SelectedSourceSetupEntry] =
-    val requestWithCompleted = request.selection.copy(
-      completed = request.selection.completed ++ ExecutionState.completedNames(request.state)
-    )
-    val selection = PlanSelector.select(request.manifest, requestWithCompleted, request.hostFacts)
-
-    (selection.skipped.map(SelectedSourceSetupEntry.Skipped.apply) ++
-      selection.runnable.map(SelectedSourceSetupEntry.Runnable.apply)).sortBy(_.index)
+  private def selectedHasPackageEntry(selected: SelectedPlanEntries): Boolean =
+    selected.existsRunnable: entry =>
+      entry.entry.kind.exists(PackageSpecDecoder.isSourceSetupPackageKind)
 
   private def executeSourceSetup(
       sourceSetup: SourceSetupPlan,
@@ -95,14 +80,6 @@ object ExecutionWithSourceSetup:
       events = combined,
       result = PlanResult.fromEvents(combined, result.result.remaining)
     )
-
-private enum SelectedSourceSetupEntry:
-  case Runnable(entry: RunnablePlanEntry)
-  case Skipped(entry: SkippedPlanEntry)
-
-  def index: Int = this match
-    case Runnable(entry) => entry.index
-    case Skipped(entry)  => entry.index
 
 private enum SourceSetupStep:
   case Continue(events: Vector[PlanEvent])

@@ -21,83 +21,47 @@ final class PackageManagerInstallers(
   override def installApt(
       operation: PackagePlanOperation[PackageSpec.Apt],
       policy: ExecutionPolicy
-  ): PlanOperationOutcome = installPackageCommands(
-    operation.summary,
-    PackageManagerInstallers.commandSpecs(operation, policy, aptUpdateBeforeInstall),
-    policy
-  )
+  ): PlanOperationOutcome = installPackageOperation(operation, policy)
 
   override def installPacman(
       operation: PackagePlanOperation[PackageSpec.Pacman],
       policy: ExecutionPolicy
-  ): PlanOperationOutcome = installPackageCommands(
-    operation.summary,
-    PackageManagerInstallers.commandSpecs(operation, policy, aptUpdateBeforeInstall),
-    policy
-  )
+  ): PlanOperationOutcome = installPackageOperation(operation, policy)
 
   override def installDnf(
       operation: PackagePlanOperation[PackageSpec.Dnf],
       policy: ExecutionPolicy
-  ): PlanOperationOutcome = installPackageCommands(
-    operation.summary,
-    PackageManagerInstallers.commandSpecs(operation, policy, aptUpdateBeforeInstall),
-    policy
-  )
+  ): PlanOperationOutcome = installPackageOperation(operation, policy)
 
   override def installZypper(
       operation: PackagePlanOperation[PackageSpec.Zypper],
       policy: ExecutionPolicy
-  ): PlanOperationOutcome = installPackageCommands(
-    operation.summary,
-    PackageManagerInstallers.commandSpecs(operation, policy, aptUpdateBeforeInstall),
-    policy
-  )
+  ): PlanOperationOutcome = installPackageOperation(operation, policy)
 
   override def installFlatpak(
       operation: PackagePlanOperation[PackageSpec.Flatpak],
       policy: ExecutionPolicy
-  ): PlanOperationOutcome = installPackageCommands(
-    operation.summary,
-    PackageManagerInstallers.commandSpecs(operation, policy, aptUpdateBeforeInstall),
-    policy
-  )
+  ): PlanOperationOutcome = installPackageOperation(operation, policy)
 
   override def installSnap(
       operation: PackagePlanOperation[PackageSpec.Snap],
       policy: ExecutionPolicy
-  ): PlanOperationOutcome = installPackageCommands(
-    operation.summary,
-    PackageManagerInstallers.commandSpecs(operation, policy, aptUpdateBeforeInstall),
-    policy
-  )
+  ): PlanOperationOutcome = installPackageOperation(operation, policy)
 
   override def installAur(
       operation: PackagePlanOperation[PackageSpec.Aur],
       policy: ExecutionPolicy
-  ): PlanOperationOutcome = installPackageCommands(
-    operation.summary,
-    PackageManagerInstallers.commandSpecs(operation, policy, aptUpdateBeforeInstall),
-    policy
-  )
+  ): PlanOperationOutcome = installPackageOperation(operation, policy)
 
   override def installCargo(
       operation: PackagePlanOperation[PackageSpec.Cargo],
       policy: ExecutionPolicy
-  ): PlanOperationOutcome = installPackageCommands(
-    operation.summary,
-    PackageManagerInstallers.commandSpecs(operation, policy, aptUpdateBeforeInstall),
-    policy
-  )
+  ): PlanOperationOutcome = installPackageOperation(operation, policy)
 
   override def installSdkman(
       operation: PackagePlanOperation[PackageSpec.Sdkman],
       policy: ExecutionPolicy
-  ): PlanOperationOutcome = installPackageCommands(
-    operation.summary,
-    PackageManagerInstallers.commandSpecs(operation, policy, aptUpdateBeforeInstall),
-    policy
-  )
+  ): PlanOperationOutcome = installPackageOperation(operation, policy)
 
   override def installBinaryDownloads(
       operation: InstallerPlanOperation[InstallerSpec.BinaryDownloads],
@@ -147,6 +111,15 @@ final class PackageManagerInstallers(
       policy: ExecutionPolicy
   ): PlanOperationOutcome =
     new CommandsExecutor(commandExecutor, hostFacts).install(operation, policy)
+
+  private def installPackageOperation(
+      operation: PackagePlanOperation[? <: PackageSpec],
+      policy: ExecutionPolicy
+  ): PlanOperationOutcome = installPackageCommands(
+    operation.summary,
+    PackageManagerInstallers.commandSpecs(operation, policy, aptUpdateBeforeInstall),
+    policy
+  )
 
   private def installPackageCommands(
       summary: PlanOperationSummary,
