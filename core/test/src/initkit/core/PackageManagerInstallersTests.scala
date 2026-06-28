@@ -23,6 +23,19 @@ object PackageManagerInstallersTests extends TestSuite:
       assert(baseCommands.forall(_.sudo == SudoMode.Required))
       assert(baseCommands.forall(_.env == noninteractiveAptEnv))
 
+    test("apt source setup update marker adds apt-get update before package installs"):
+      val commands = PackageManagerInstallers.commandSpecs(
+        packagePlanOperation("apt-containers"),
+        applyPolicy,
+        aptUpdateBeforeInstall = true
+      )
+
+      assert(argvs(commands).head == Vector("apt-get", "update"))
+      assert(argvs(commands).drop(1) == perPackage(
+        Vector("apt-get", "install", "-y"),
+        Vector("docker-ce", "docker-ce-cli", "containerd.io", "docker-buildx-plugin", "docker-compose-plugin")
+      ))
+
     test("generates pacman commands from config example"):
       val baseCommands = packageCommands("pacman-base-cli")
       val containerCommands = packageCommands("pacman-containers")

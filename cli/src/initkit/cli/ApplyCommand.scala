@@ -153,6 +153,7 @@ final class ApplyCommand extends Callable[Int]:
       aptUpdateBeforeInstall = sourceSetup.aptUpdateBeforeInstall,
       hostFacts = hostFacts
     )
+    val sourceSetupExecutor = SourceSetupExecutor(commandRunner)
     val request = ExecutionEngineRequest(
       manifest = manifest,
       selection = selectionRequest,
@@ -162,8 +163,8 @@ final class ApplyCommand extends Callable[Int]:
       policy = policy
     )
 
-    ExecutionEngine
-      .run(request, installer, ExecutionStateWriter.live, clock)
+    ExecutionWithSourceSetup
+      .run(request, installer, sourceSetup, sourceSetupExecutor, ExecutionStateWriter.live, clock)
       .left
       .map(_.message)
 

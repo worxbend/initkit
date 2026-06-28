@@ -50,6 +50,65 @@ object TuiExecutionTests extends TestSuite:
       assert(report.logLines.exists(_.contains("stderr: warn")))
       assert(report.logLines.exists(_.contains("summary: completed=1")))
 
+    test("apply actions run source setup before package commands"):
+      val actions = Vector(
+        TuiExecutionAction.RunSelected,
+        TuiExecutionAction.RunAllMatching,
+        TuiExecutionAction.Resume
+      )
+
+      actions.foreach: action =>
+        val fixture = packageExecutionFixture(select = Vector("apt-base-cli"))
+        val sourceCommand = directCommandSpec("setup-source")
+        val packageCommand = packageCommands(fixture.context.manifest).head
+        val fakeExecutor = FakeCommandExecutor(
+          Vector(sourceCommand, packageCommand).map(command =>
+            FakeCommandResponse(command, CommandResultData.exited(0, duration = Duration.Zero))
+          )
+        )
+        val writer = RecordingStateWriter()
+        val runner = TuiExecutionRunner(_ => fakeExecutor, writer)
+        val context = fixture.context.copy(
+          sourceSetup = SourceSetupPlan(
+            Vector(SourceSetupOperation.RunCommand("Add source", sourceCommand)),
+            Vector.empty,
+            aptUpdateBeforeInstall = false
+          )
+        )
+
+        val report = requireRight(runner.run(context, fixture.model, action))
+
+        assert(fakeExecutor.calls == Vector(sourceCommand, packageCommand))
+        assert(report.result.events.collect { case PlanEvent.Completed(operation, _, _) => operation.name } == Vector(
+          "source-setup",
+          "apt-base-cli"
+        ))
+        assert(report.logLines.exists(_.contains("completed: source-setup")))
+
+    test("source setup failure stops TUI package execution"):
+      val fixture = packageExecutionFixture(select = Vector("apt-base-cli"))
+      val sourceCommand = directCommandSpec("setup-source")
+      val fakeExecutor = FakeCommandExecutor(
+        Vector(FakeCommandResponse(sourceCommand, CommandResultData.exited(5, duration = Duration.Zero)))
+      )
+      val writer = RecordingStateWriter()
+      val runner = TuiExecutionRunner(_ => fakeExecutor, writer)
+      val context = fixture.context.copy(
+        sourceSetup = SourceSetupPlan(
+          Vector(SourceSetupOperation.RunCommand("Add source", sourceCommand)),
+          Vector.empty,
+          aptUpdateBeforeInstall = false
+        )
+      )
+
+      val report = requireRight(runner.run(context, fixture.model, TuiExecutionAction.RunSelected))
+
+      assert(fakeExecutor.calls == Vector(sourceCommand))
+      assert(writer.writes.isEmpty)
+      assert(report.result.exitCode == 5)
+      assert(report.logLines.exists(_.contains("failed: source-setup")))
+      assert(report.logLines.exists(_.contains("summary: completed=0 skipped=0 failed=1")))
+
     test("interrupt entries write state and log resume instructions"):
       val writer = RecordingStateWriter()
       val fixture = executionFixture(select = Vector("pause"))
@@ -100,6 +159,37 @@ object TuiExecutionTests extends TestSuite:
 
     ExecutionFixture(model, context)
 
+  private def packageExecutionFixture(select: Vector[String]): ExecutionFixture =
+    val manifest = packageManifest()
+    val state = ExecutionState.initial(manifest, clock)
+    val stateFile = TuiStateFileInput(
+      path = Path.of("/tmp/initkit-tui.state.json"),
+      existedBeforeLoad = false,
+      resetRequested = false
+    )
+    val model = TuiViewModel.from(
+      TuiViewModelRequest(
+        manifest = manifest,
+        hostFacts = HostFacts.fake(distribution = Some("ubuntu")),
+        state = state,
+        stateFile = stateFile,
+        selection = TuiSelectionInputs.fromOptions(select, Vector.empty),
+        dryRun = true
+      )
+    )
+    val context = TuiExecutionContext(
+      manifest = manifest,
+      hostFacts = HostFacts.fake(distribution = Some("ubuntu")),
+      statePath = Path.of("/tmp/initkit-tui.state.json"),
+      stateFile = stateFile,
+      state = state,
+      sourceSetup = SourceSetupPlan(Vector.empty, Vector.empty, aptUpdateBeforeInstall = false),
+      configPath = Path.of("/tmp/initkit-profile.yaml"),
+      clock = clock
+    )
+
+    ExecutionFixture(model, context)
+
   private def workstationManifest(): Manifest =
     Manifest(
       apiVersion = Some("initkit.io/v1alpha1"),
@@ -113,6 +203,36 @@ object TuiExecutionTests extends TestSuite:
         plan = Vector(
           commandEntry("post-install"),
           interruptEntry("pause")
+        )
+      )
+    )
+
+  private def packageManifest(): Manifest =
+    Manifest(
+      apiVersion = Some("initkit.io/v1alpha1"),
+      kind = Some("WorkstationProfile"),
+      metadata = Metadata(Some("developer-workstation"), VectorMap.empty, VectorMap.empty),
+      spec = ManifestSpec(
+        target = None,
+        policy = Some(Policy(dryRun = Some(true), continueOnError = None, requireSudo = None, reboot = None)),
+        vars = VectorMap.empty,
+        sources = None,
+        plan = Vector(aptEntry("apt-base-cli"))
+      )
+    )
+
+  private def aptEntry(name: String): PlanEntry =
+    PlanEntry(
+      name = Some(name),
+      kind = Some("apt-packages"),
+      description = Some("install apt packages"),
+      execution = Some(Execution(Some("sequential"), maxConcurrency = None, failFast = None, locks = Vector.empty)),
+      when = None,
+      spec = Some(
+        RawYaml.MappingValue(
+          VectorMap(
+            "install" -> RawYaml.SequenceValue(Vector(RawYaml.StringValue("curl")))
+          )
         )
       )
     )
@@ -170,6 +290,26 @@ object TuiExecutionTests extends TestSuite:
 
   private def commandSpec(command: String): CommandSpec =
     CommandSpec.shell(CommandArgument(command), sudo = SudoMode.Disabled)
+
+  private def directCommandSpec(command: String): CommandSpec =
+    CommandSpec.direct(Vector(CommandArgument(command)), sudo = SudoMode.Disabled)
+
+  private def packageCommands(manifest: Manifest): Vector[CommandSpec] =
+    PlanOperation.decode(0, manifest.spec.plan.head) match
+      case Right(PlanOperation.AptPackages(operation)) =>
+        PackageManagerInstallers.commandSpecs(
+          operation,
+          ExecutionPolicy(
+            mode = ExecutionRunMode.Apply,
+            continueOnError = false,
+            requireSudo = false,
+            reboot = RebootExecutionPolicy(allowed = false, prompt = true)
+          )
+        )
+      case Right(other) =>
+        throw new java.lang.AssertionError(s"expected apt operation, got $other")
+      case Left(errors) =>
+        throw new java.lang.AssertionError(errors.map(_.message).mkString("; "))
 
   private def requireRight[A](value: Either[String, A]): A =
     value.fold(error => throw new java.lang.AssertionError(error), identity)

@@ -2028,3 +2028,20 @@ Checks passed: `./mill core.test`, `./mill __.compile`, and
 `./mill __.test`. Remaining risk: source setup execution is still a core
 boundary only; T002 must wire it into CLI and TUI apply flows before package
 installation.
+
+Progress note, 2026-06-28: refreshed T002 wired source setup execution into
+plain CLI `apply` and TUI execution actions. `ExecutionWithSourceSetup` now
+runs generated source setup operations before selected package installs when
+apply mode has runnable package entries; source setup failures stop later
+package execution with a failed `source-setup` event and non-zero exit code.
+Dry-run mode previews source setup as a normal dry-run operation without
+executing commands, writing source files, or creating state. TUI run selected,
+run all matching, and resume actions share the same ordering path. The apt
+`updateBeforeInstall` marker still flows into apt package command generation,
+so apt entries include `apt-get update` before installs. Checks passed:
+`./mill core.test`, `./mill tui.test`, `./mill cli.test`,
+`./mill __.compile`, `./mill __.test`, and
+`./mill app.run apply --config config.example.yaml --dry-run --state
+/tmp/initkit-source-setup-dry-run-state.json`; the throwaway dry-run state file
+was not created. `git diff --check` and `jq empty .agent-loop/tasks.json` also
+passed.

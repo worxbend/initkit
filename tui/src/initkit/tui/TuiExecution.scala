@@ -52,7 +52,8 @@ final case class TuiExecutionReport(
 
 final class TuiExecutionRunner(
     commandExecutorFactory: ExecutionRunMode => CommandExecutor = TuiExecutionRunner.defaultCommandExecutor,
-    stateWriter: ExecutionStateWriter = ExecutionStateWriter.live
+    stateWriter: ExecutionStateWriter = ExecutionStateWriter.live,
+    sourceSetupFiles: SourceSetupFiles = SourceSetupFiles.Jvm
 ):
   def run(
       context: TuiExecutionContext,
@@ -68,6 +69,7 @@ final class TuiExecutionRunner(
       aptUpdateBeforeInstall = context.sourceSetup.aptUpdateBeforeInstall,
       hostFacts = context.hostFacts
     )
+    val sourceSetupExecutor = SourceSetupExecutor(commandExecutor, sourceSetupFiles)
     val request = ExecutionEngineRequest(
       manifest = context.manifest,
       selection = PlanSelectionRequest.fromFilters(
@@ -81,8 +83,8 @@ final class TuiExecutionRunner(
       policy = policy
     )
 
-    ExecutionEngine
-      .run(request, installer, stateWriter, context.clock)
+    ExecutionWithSourceSetup
+      .run(request, installer, context.sourceSetup, sourceSetupExecutor, stateWriter, context.clock)
       .left
       .map(_.message)
       .map: result =>
