@@ -2079,3 +2079,14 @@ repository was mechanically reformatted once. `.agent-loop/config.json` now
 includes the formatter check in configured validation. Checks passed:
 `./mill --no-daemon resolve _`, `./mill __.compile`, `./mill __.test`, and
 `./mill mill.scalalib.scalafmt/checkFormatAll`.
+
+Final validation refreshed T006, 2026-06-28: the refreshed queue was validated
+noninteractively. Mill discovery passed for `./mill --no-daemon resolve _`.
+Configured validation passed for recursive compile, recursive tests, and the
+project-native scalafmt check. Root, `apply`, and `tui` help smokes exited
+successfully, with `tui --help` returning picocli usage instead of launching
+the full-screen UI. The example dry-run with `--state
+/tmp/initkit-final-dry-run-state.json` exited 0 and did not create the
+throwaway state file. `jq empty .agent-loop/tasks.json`,
+`jq empty .agent-loop/config.json`, and `git diff --check` also pass. No
+runtime source fix was needed.
