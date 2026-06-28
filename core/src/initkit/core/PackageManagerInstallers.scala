@@ -14,7 +14,8 @@ final class PackageManagerInstallers(
     binaryDownloadHttpConfig: BinaryDownloadHttpConfig = BinaryDownloadHttpConfig.default,
     shellScriptDownloader: ShellScriptDownloader = ShellScriptDownloader.Jdk,
     shellScriptFiles: ShellScriptFiles = ShellScriptFiles.Jvm,
-    nerdFontsFiles: NerdFontsFiles = NerdFontsFiles.Jvm
+    nerdFontsFiles: NerdFontsFiles = NerdFontsFiles.Jvm,
+    dotfilesFiles: DotfilesFiles = DotfilesFiles.Jvm
 ) extends PlanOperationInstaller:
   override def installApt(
       operation: PackagePlanOperation[PackageSpec.Apt],
@@ -99,7 +100,7 @@ final class PackageManagerInstallers(
       operation: InstallerPlanOperation[InstallerSpec.DotfilesApply],
       policy: ExecutionPolicy
   ): PlanOperationOutcome =
-    unsupported(operation.summary)
+    new DotfilesExecutor(commandExecutor, dotfilesFiles).install(operation, policy)
 
   override def installInterrupt(
       operation: InstallerPlanOperation[InstallerSpec.Interrupt],

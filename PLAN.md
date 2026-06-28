@@ -1873,3 +1873,16 @@ the command executor. Focused tests cover YAML rendering with selected families
 and destination, dry-run output, parent-directory creation, YAML writing, and
 preview-before-apply execution. Checks passed: `./mill core.test`,
 `./mill __.compile`, and `./mill __.test`.
+
+Progress note, 2026-06-28: T028 added dotfiles apply support in the `core`
+module. `DotfilesExecutor` generates repository setup commands for clone,
+optional update, and checkout, verifies the dotbot config path after checkout,
+then runs the preview command before the apply command when `preview.enabled`
+is true. `PackageManagerInstallers` now delegates `dotfiles-apply` operations
+to this executor; these user-home dotfiles commands run without inheriting
+global sudo. Dry-run reports clone, update, checkout, preview, and apply
+commands plus the config-verification step without mutating files or invoking
+the command executor. Focused tests cover command generation, optional update
+omission, dry-run visibility, clone-if-missing behavior with temp directories,
+preview-before-apply ordering, and clear missing-config failure after checkout.
+Checks passed: `./mill core.test`, `./mill __.compile`, and `./mill __.test`.
