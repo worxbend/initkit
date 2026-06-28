@@ -209,6 +209,17 @@ forked working directory. Final `./mill app.compile`, `./mill app.test`, and
 `./mill --no-daemon resolve _` pass. Remaining risk is limited to future
 implementation tasks; this checkpoint reached source and test execution.
 
+Validation checkpoint VALIDATION-5, 2026-06-28: loop state and build metadata
+were rechecked for the completed T001-T003 chunk. The configured recursive
+checks passed: `./mill __.compile` and `./mill __.test`. Full recursive tests
+ran `ManifestLoaderTests`, `AppSnapshotTests`, and `InitkitCliTests`
+successfully. `./mill --no-daemon resolve _` also confirms the `app`, `cli`,
+`config`, and `tui` modules remain discoverable. A CLI smoke check
+`./mill app.run --help` produced one transient Mill subprocess failure while
+printing correct usage, then passed on two immediate reruns, so no code fix was
+made. `.scalafmt.conf` is present, but no local `scalafmt` executable or Mill
+formatter target is configured in this workspace.
+
 Before implementing TUI-related work, scan the current TamboUI repository and
 docs, not only the existing local wrapper:
 
