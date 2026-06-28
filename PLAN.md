@@ -1942,18 +1942,18 @@ The strict queue for subsequent implementation and validation iterations is in
 `.agent-loop/tasks.json`. All refreshed tasks are pending at the time of this
 analysis iteration. The earlier queues completed the manifest loader, execution
 engine, supported installers, source setup execution, CLI/TUI wiring, TUI smoke
-coverage, formatter validation, README/docs, and final validation. The new queue
-focuses only on the remaining production-quality refactor goal, TUI polish, and
-recorded risks, with validation before and after behavior-preserving refactors.
+coverage, formatter validation, production-quality refactors, contract
+documentation, README/docs updates, and final validation. The new queue focuses
+only on the remaining TUI polish, visible risk reporting, legacy-parity example
+coverage, and final validation.
 
-- T001 Run production-quality baseline validation (validation, simple)
-- T002 Audit Scala refactor targets (improvement, moderate)
-- T003 Refactor core execution boundaries (improvement, complex)
-- T004 Polish TamboUI with Canvas, Scrollbar, Spinner, Table, and WaveText (improvement, complex)
-- T005 Refactor user-facing orchestration (improvement, complex)
-- T006 Run refactor checkpoint (validation, simple)
-- T007 Tighten contracts and regression coverage (improvement, moderate)
-- T008 Run final production-quality validation (validation, simple)
+- T001 Refresh TamboUI polish audit (chore, moderate)
+- T002 Polish TUI plan panes (improvement, complex)
+- T003 Surface TUI execution risk (improvement, complex)
+- T004 Run TUI polish checkpoint (validation, simple)
+- T005 Expand legacy parity examples (improvement, moderate)
+- T006 Harden example regression coverage (improvement, moderate)
+- T007 Run final polish validation (validation, simple)
 
 Progress note, 2026-06-28: T013 added JSON execution state persistence in the
 `core` module. State now records manifest identity (`metadata.name`,
@@ -2544,3 +2544,20 @@ passed: `jq empty .agent-loop/tasks.json`, `jq empty .agent-loop/config.json`,
 `git diff --check`, and the conflict-marker scan. No in-scope regression or
 fix was found; residual risk remains limited to validation that is not covered
 by noninteractive tests, such as a human-driven full-screen TUI session.
+
+Progress note T001 / iteration 62, 2026-06-29: refreshed the TamboUI polish
+audit without changing runtime source or tests. Initkit's current TamboUI
+snapshot dependencies resolve to `0.5.0-20260619.083558-1`; upstream
+`https://github.com/tamboui/tamboui` was inspected at commit
+`fc60a9fdfa80ffb3647d31a741e8dce94c4f1019`. The audit in
+`.agent-loop/memory.md` records the upstream docs, demos, source files, local
+snapshot metadata, and Initkit TUI files inspected. Follow-up TUI polish should
+prefer Toolkit `table()` with explicit `TableState` as a render adapter for the
+plan list, `scrollable()` for plan/details/log panes, `lineGauge()` or
+`gauge()` for compact progress, existing `row`/`column`/`panel` layouts for the
+dashboard, and `spinner()` only while work is running. WaveText and Canvas are
+available upstream but are not recommended for this queue's scan-friendly
+workstation-runner UI. The exact later touch points remain
+`TambouiApp.scala`, `TuiViewModel.scala`, `TuiExecution.scala`,
+`TuiCommand.scala` only if launch data needs a view-only field, and the
+existing `TuiViewModelTests`, `TuiExecutionTests`, and `TuiSmokeTests`.
