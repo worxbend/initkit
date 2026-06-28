@@ -2666,3 +2666,17 @@ environment, so native-image packaging remains unavailable locally rather than
 a validation failure. Full-screen manual TUI interaction remains covered by
 terminal-free tests and noninteractive smokes, not by a human-driven terminal
 session in this loop.
+
+Validation checkpoint VALIDATION-69, 2026-06-29: the configured checkpoint
+validation was rerun after the completed polish and example-regression work.
+Project metadata still exposes the checked-in `./mill` launcher, root
+`build.mill`, and `.scalafmt.conf`; no additional project-native validation
+hooks were found. Mill discovery passed for `./mill --no-daemon resolve _`,
+listing `app`, `cli`, `config`, `core`, `host`, `selective`, and `tui`.
+Configured checks passed: `./mill __.compile`, `./mill __.test`, and
+`./mill mill.scalalib.scalafmt/checkFormatAll`. Metadata and integrity checks
+also passed: `jq empty .agent-loop/tasks.json`, `jq empty
+.agent-loop/config.json`, `git diff --check`, and the conflict-marker scan.
+No source fix was needed. Remaining risk is unchanged: full-screen manual TUI
+interaction is covered by terminal-free tests and noninteractive smokes rather
+than by a human-driven terminal session.
