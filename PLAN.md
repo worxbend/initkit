@@ -1667,3 +1667,15 @@ paths covered by fakes; tests still avoid real sudo. Checks passed:
 `./mill core.test.testOnly initkit.core.ProcessCommandRunnerTests`,
 `./mill __.compile`, `./mill __.test`, `git diff --check`, and
 `jq empty .agent-loop/tasks.json`.
+
+Progress note, 2026-06-28: T019 added source setup operation generation in the
+`core` module. `SourceSetupGenerator` turns typed `spec.sources` into execution
+operations and dry-run actions for apt GPG keys/repository files, dnf repo
+files, zypper repository commands, and flatpak remotes. Apt/dnf/zypper source
+sections are filtered to the active host package manager, while flatpak remotes
+are generated only when the `flatpak` command is available. Apt
+`updateBeforeInstall` is carried as an `aptUpdateBeforeInstall` marker for
+later package install executors, and flatpak remotes use `--if-not-exists` by
+default for idempotence where practical. Checks passed: `./mill core.test`,
+`./mill __.compile`, `./mill __.test`, `git diff --check`, and
+`jq empty .agent-loop/tasks.json`.
