@@ -1964,3 +1964,19 @@ movement, toggling, disabled reason rendering, and command-side model loading
 from `config.example.yaml` plus a real state file. Checks passed:
 `./mill tui.test`, `./mill cli.test`, `./mill __.compile`, `./mill __.test`,
 `git diff --check`, and `jq empty .agent-loop/tasks.json`.
+
+Progress note, 2026-06-28: T034 wired TUI execution actions through the same
+core engine and installer path used by plain `apply`. `initkit tui` now passes a
+launch context containing the resolved manifest, host facts, state path, source
+setup plan, and loaded execution state into the renderer. The TUI handles
+preview selected, run selected, run all matching, resume, details logging, and
+quit confirmation while work is running; background work is started with Ox and
+UI mutations are routed back through TamboUI's render thread. The log panel now
+shows scheduled/started/completed/skipped/failed/interrupted events, dry-run
+actions, command stdout/stderr captured by a logging command-executor wrapper,
+interrupt state paths, resume instructions, and the final summary. Focused TUI
+tests cover shared dry-run operation generation, apply-mode engine execution,
+command output logging, interrupt state writes, resume instructions, and
+quit-confirmation text. Checks passed: `./mill tui.test`, `./mill cli.test`,
+`./mill __.compile`, `./mill __.test`, `git diff --check`, and
+`jq empty .agent-loop/tasks.json`.

@@ -10,55 +10,180 @@ import dev.tamboui.toolkit.event.EventResult
 import dev.tamboui.toolkit.app.ToolkitRunner
 import dev.tamboui.tui.event.KeyEvent
 import dev.tamboui.widgets.block.BorderType
+import ox.*
+import scala.util.control.NonFatal
 
 object TambouiApp:
-  def run(initialModel: TuiViewModel): Unit =
-    val state = TuiAppState(initialModel)
+  def run(launch: TuiLaunchModel): Unit =
     val runner = ToolkitRunner.create()
-    try
-      runner.run { () =>
-        TuiRenderer.render(state, runner)
-      }
-    finally
-      runner.close()
+    supervised:
+      val state = TuiAppState(launch)
+      try
+        runner.run { () =>
+          TuiRenderer.render(state, runner)
+        }
+      finally
+        runner.close()
 
-private[tui] final case class TuiAppState(private var current: TuiViewModel):
+private[tui] final class TuiAppState private (
+    private var current: TuiViewModel,
+    private var context: TuiExecutionContext,
+    private var log: Vector[String],
+    private var status: TuiWorkStatus,
+    private var confirmQuit: Boolean,
+    executionRunner: TuiExecutionRunner
+):
   def model: TuiViewModel =
     current
 
+  def logLines: Vector[String] =
+    log
+
+  def workStatus: TuiWorkStatus =
+    status
+
+  def quitConfirmationVisible: Boolean =
+    confirmQuit
+
   def moveFocus(delta: Int): Unit =
-    current = current.moveFocus(delta)
+    whenIdle:
+      current = current.moveFocus(delta)
 
   def focusFirst(): Unit =
-    current = current.focusFirst
+    whenIdle:
+      current = current.focusFirst
 
   def focusLast(): Unit =
-    current = current.focusLast
+    whenIdle:
+      current = current.focusLast
 
   def toggleFocused(): Unit =
-    current = current.toggleFocused
+    whenIdle:
+      current = current.toggleFocused
 
   def selectAllRunnable(): Unit =
-    current = current.selectAllRunnable
+    whenIdle:
+      current = current.selectAllRunnable
+
+  def detailsFocused(): Unit =
+    val details = TuiTextLayout.detailsLines(current)
+    appendLog(("details:" +: details.map(line => s"  $line"))*)
+
+  def start(action: TuiExecutionAction, runner: ToolkitRunner)(using Ox): Unit =
+    if isRunning then appendLog(s"already running: ${status.label}")
+    else
+      confirmQuit = false
+      status = TuiWorkStatus.Running(action.label)
+      appendLog(s"started: ${action.label}")
+
+      forkDiscard:
+        try
+          val report = executionRunner.run(context, current, action)
+          runner.runOnRenderThread(() => finish(action, report))
+        catch
+          case NonFatal(error) =>
+            val message = Option(error.getMessage).getOrElse(error.getClass.getSimpleName)
+            runner.runOnRenderThread(() => fail(action, message))
+
+  def requestQuit(runner: ToolkitRunner): Unit =
+    if isRunning then
+      confirmQuit = true
+      appendLog("quit requested while work is running")
+    else runner.quit()
+
+  def confirmQuitIfVisible(runner: ToolkitRunner): Unit =
+    if confirmQuit then runner.quit()
+
+  def cancelQuitConfirmation(): Unit =
+    if confirmQuit then
+      confirmQuit = false
+      appendLog("quit cancelled")
+
+  private def finish(action: TuiExecutionAction, report: Either[String, TuiExecutionReport]): Unit =
+    report match
+      case Left(message) =>
+        fail(action, message)
+      case Right(value) =>
+        context = context.withState(value.result.state)
+        current = rebuildModel(value.result.state, value.action)
+        log = (log ++ value.logLines).takeRight(TuiAppState.MaxLogLines)
+        status = TuiWorkStatus.Idle
+        confirmQuit = false
+
+  private def fail(action: TuiExecutionAction, message: String): Unit =
+    appendLog(s"failed: ${action.label}: $message")
+    status = TuiWorkStatus.Idle
+    confirmQuit = false
+
+  private def rebuildModel(state: initkit.core.ExecutionState, action: TuiExecutionAction): TuiViewModel =
+    TuiViewModel.from(
+      TuiViewModelRequest(
+        manifest = context.manifest,
+        hostFacts = context.hostFacts,
+        state = state,
+        stateFile = context.stateFile,
+        selection = TuiSelectionInputs.fromOptions(current.selectedEntryNames, Vector.empty),
+        dryRun = action.mode == initkit.core.ExecutionRunMode.DryRun
+      )
+    )
+
+  private def appendLog(lines: String*): Unit =
+    log = (log ++ lines).takeRight(TuiAppState.MaxLogLines)
+
+  private def whenIdle(action: => Unit): Unit =
+    if !isRunning then action
+
+  private def isRunning: Boolean =
+    status match
+      case TuiWorkStatus.Running(_) => true
+      case TuiWorkStatus.Idle       => false
+
+private[tui] object TuiAppState:
+  private val MaxLogLines: Int = 200
+
+  def apply(launch: TuiLaunchModel): TuiAppState =
+    new TuiAppState(
+      current = launch.viewModel,
+      context = launch.context,
+      log = TuiTextLayout.outputLines(launch.viewModel),
+      status = TuiWorkStatus.Idle,
+      confirmQuit = false,
+      executionRunner = TuiExecutionRunner()
+    )
+
+enum TuiWorkStatus:
+  case Idle
+  case Running(description: String)
+
+  def label: String =
+    this match
+      case Idle                 => "idle"
+      case Running(description) => description
 
 private[tui] object TuiRenderer:
-  def render(state: TuiAppState, runner: ToolkitRunner): Element =
+  def render(state: TuiAppState, runner: ToolkitRunner)(using Ox): Element =
     val model = state.model
 
     column(
-      statusBar(model).length(1),
+      statusBar(model, state).length(1),
       checklistPane(model).fill(4),
       detailsPane(model).fill(2),
-      outputPane(model).fill(1),
-      keyHints().length(1)
+      outputPane(state).fill(1),
+      keyHints(state).length(1)
     ).spacing(1)
       .id("initkit-tui")
       .focusable()
       .onKeyEvent(event => handleKey(event, state, runner))
 
-  private def handleKey(event: KeyEvent, state: TuiAppState, runner: ToolkitRunner): EventResult =
-    if event.isQuit() then
-      runner.quit()
+  private def handleKey(event: KeyEvent, state: TuiAppState, runner: ToolkitRunner)(using Ox): EventResult =
+    if state.quitConfirmationVisible && event.isCharIgnoreCase('y') then
+      state.confirmQuitIfVisible(runner)
+      EventResult.HANDLED
+    else if state.quitConfirmationVisible && event.isCharIgnoreCase('n') then
+      state.cancelQuitConfirmation()
+      EventResult.HANDLED
+    else if event.isQuit() then
+      state.requestQuit(runner)
       EventResult.HANDLED
     else if event.isUp() then
       state.moveFocus(-1)
@@ -78,10 +203,25 @@ private[tui] object TuiRenderer:
     else if event.isCharIgnoreCase('a') then
       state.selectAllRunnable()
       EventResult.HANDLED
+    else if event.isCharIgnoreCase('p') then
+      state.start(TuiExecutionAction.PreviewSelected, runner)
+      EventResult.HANDLED
+    else if event.isChar('r') then
+      state.start(TuiExecutionAction.RunSelected, runner)
+      EventResult.HANDLED
+    else if event.isChar('R') then
+      state.start(TuiExecutionAction.RunAllMatching, runner)
+      EventResult.HANDLED
+    else if event.isCharIgnoreCase('e') then
+      state.start(TuiExecutionAction.Resume, runner)
+      EventResult.HANDLED
+    else if event.isCharIgnoreCase('d') then
+      state.detailsFocused()
+      EventResult.HANDLED
     else EventResult.UNHANDLED
 
-  private def statusBar(model: TuiViewModel): TextElement =
-    val line = TuiTextLayout.statusLine(model)
+  private def statusBar(model: TuiViewModel, state: TuiAppState): TextElement =
+    val line = TuiTextLayout.statusLine(model, state.workStatus, state.quitConfirmationVisible)
     text(line).white().bg(Color.indexed(235)).bold().ellipsis()
 
   private def checklistPane(model: TuiViewModel): Panel =
@@ -110,14 +250,14 @@ private[tui] object TuiRenderer:
       column(TuiTextLayout.detailsLines(model).map(line => text(line).ellipsis())*)
     ).fill()
 
-  private def outputPane(model: TuiViewModel): Panel =
+  private def outputPane(state: TuiAppState): Panel =
     framedPanel(
-      "Output",
-      column(TuiTextLayout.outputLines(model).map(line => text(line).dim().ellipsis())*)
+      "Log",
+      column(state.logLines.map(line => text(line).dim().ellipsis())*)
     ).fill()
 
-  private def keyHints(): TextElement =
-    text(TuiTextLayout.keyHints).gray().ellipsis()
+  private def keyHints(state: TuiAppState): TextElement =
+    text(TuiTextLayout.keyHints(state.quitConfirmationVisible)).gray().ellipsis()
 
   private def framedPanel(title: String, child: Element): Panel =
     panel(title, child)
@@ -135,16 +275,22 @@ final case class TuiChecklistLine(
 )
 
 object TuiTextLayout:
-  val keyHints: String = "Up/Down focus  Space/Enter toggle  a select all  q quit"
+  def keyHints(confirmQuit: Boolean = false): String =
+    if confirmQuit then "Work is running. Quit anyway? y confirm  n cancel"
+    else "Up/Down focus  Space toggle  a select all  p preview  r run  R all  e resume  d details  q quit"
 
   def statusLine(model: TuiViewModel): String =
+    statusLine(model, TuiWorkStatus.Idle, confirmQuit = false)
+
+  def statusLine(model: TuiViewModel, status: TuiWorkStatus, confirmQuit: Boolean): String =
     val profile = model.profile.name
     val mode = model.runMode.toString.toLowerCase
     val selected = s"${model.counts.selected}/${model.counts.runnable} selected"
     val skipped = s"${model.counts.skipped} skipped"
     val completed = s"${model.counts.completed} completed"
     val host = s"${model.host.family}${model.host.distribution.map("/" + _).getOrElse("")} ${model.host.architecture}"
-    s" initkit | $profile | $mode | $selected | $skipped | $completed | $host "
+    val work = if confirmQuit then "confirm quit" else status.label
+    s" initkit | $profile | $mode | $work | $selected | $skipped | $completed | $host "
 
   def checklistLines(model: TuiViewModel): Vector[TuiChecklistLine] =
     if model.rows.isEmpty then

@@ -9,10 +9,10 @@ import scala.compiletime.uninitialized
 import scala.util.control.NonFatal
 
 import initkit.config.{Manifest, ManifestLoadError}
-import initkit.core.{ExecutionStateStore, ManifestVariableResolver, RuntimeVariables}
+import initkit.core.{ExecutionPolicy, ExecutionRunMode, ExecutionStateStore, ManifestVariableResolver, RuntimeVariables, SourceSetupGenerator}
 import initkit.host.{HostDetector, HostFacts}
 import initkit.tui.TambouiApp
-import initkit.tui.{TuiSelectionInputs, TuiStateFileInput, TuiViewModel, TuiViewModelRequest}
+import initkit.tui.{TuiExecutionContext, TuiLaunchModel, TuiSelectionInputs, TuiStateFileInput, TuiViewModel, TuiViewModelRequest}
 import picocli.CommandLine
 import picocli.CommandLine.Model.CommandSpec
 import picocli.CommandLine.{Command, Mixin, Option as CliOption, Spec}
@@ -51,16 +51,16 @@ final class TuiCommand extends Callable[Int]:
       case Left(message) =>
         commandErr.println(message)
         CommandLine.ExitCode.USAGE
-      case Right(viewModel) =>
+      case Right(launch) =>
         try
-          TambouiApp.run(viewModel)
+          TambouiApp.run(launch)
           CommandLine.ExitCode.OK
         catch
           case NonFatal(error) =>
             commandErr.println(s"Unable to start terminal UI: ${Option(error.getMessage).getOrElse(error.getClass.getSimpleName)}")
             CommandLine.ExitCode.SOFTWARE
 
-  private def buildViewModel(): Either[String, TuiViewModel] =
+  private def buildViewModel(): Either[String, TuiLaunchModel] =
     shared.configFile match
       case Left(message) =>
         Left(message)
@@ -69,7 +69,7 @@ final class TuiCommand extends Callable[Int]:
           case Left(message) =>
             Left(message)
           case Right(explicitStatePath) =>
-            TuiCommandModelLoader.load(
+            TuiCommandModelLoader.loadSession(
               TuiCommandModelOptions(
                 configPath = configPath,
                 statePath = explicitStatePath,
@@ -98,6 +98,9 @@ private[cli] final case class TuiCommandModelOptions(
 
 private[cli] object TuiCommandModelLoader:
   def load(options: TuiCommandModelOptions): Either[String, TuiViewModel] =
+    loadSession(options).map(_.viewModel)
+
+  def loadSession(options: TuiCommandModelOptions): Either[String, TuiLaunchModel] =
     for
       manifest <- loadManifest(options.configPath, options.hostFacts)
       statePath = resolveStatePath(options.statePath, manifest, options.configPath)
@@ -106,19 +109,36 @@ private[cli] object TuiCommandModelLoader:
         .loadOrInitialize(statePath, manifest, options.resetState, options.clock)
         .left
         .map(_.message)
-    yield
-      TuiViewModel.from(
+      mode = if options.dryRun then ExecutionRunMode.DryRun else ExecutionRunMode.Apply
+      policy = ExecutionPolicy.fromManifest(manifest.spec.policy, Some(mode))
+      sourceSetup = SourceSetupGenerator.generate(manifest.spec.sources, options.hostFacts, policy)
+      stateFile = TuiStateFileInput(
+        path = statePath,
+        existedBeforeLoad = existedBeforeLoad,
+        resetRequested = options.resetState
+      )
+      viewModel = TuiViewModel.from(
         TuiViewModelRequest(
           manifest = manifest,
           hostFacts = options.hostFacts,
           state = state,
-          stateFile = TuiStateFileInput(
-            path = statePath,
-            existedBeforeLoad = existedBeforeLoad,
-            resetRequested = options.resetState
-          ),
+          stateFile = stateFile,
           selection = TuiSelectionInputs.fromOptions(options.selectedValues, options.skipValues),
           dryRun = options.dryRun
+        )
+      )
+    yield
+      TuiLaunchModel(
+        viewModel = viewModel,
+        context = TuiExecutionContext(
+          manifest = manifest,
+          hostFacts = options.hostFacts,
+          statePath = statePath,
+          stateFile = stateFile,
+          state = state,
+          sourceSetup = sourceSetup,
+          configPath = options.configPath,
+          clock = options.clock
         )
       )
 
