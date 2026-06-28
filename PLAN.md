@@ -76,6 +76,27 @@ Build-file expectations:
 - keep existing TamboUI modules already in use
 - consider adding `dev.tamboui:tamboui-picocli:<same snapshot version>` when the TUI command is wired through picocli
 
+Scala production-quality expectations:
+
+- before non-trivial Scala changes, analyze the touched code paths for
+  responsibility boundaries, naming clarity, public API stability, error
+  modeling, resource ownership, and testability
+- refactor opportunistically when the current shape obscures behavior, creates
+  avoidable duplication, mixes decoding/planning/execution concerns, or makes
+  future installer kinds harder to add safely
+- keep comments and ScalaDoc production-grade: document public contracts,
+  non-obvious invariants, idempotency behavior, failure semantics, security
+  implications, and external command assumptions; do not add comments that only
+  restate the code
+- prefer small, named functions and typed ADTs over stringly-typed or boolean
+  control flow when it improves readability and makes invalid states harder to
+  represent
+- update tests with each refactor so behavior is pinned before and after the
+  change; include focused regression coverage for any bug or risky branch found
+  during analysis
+- run the repository's Mill compile/test checks after refactoring, and record
+  any formatter or warning gaps explicitly when local tooling is unavailable
+
 Progress note, 2026-06-28: T001 migrated the current workspace from the
 sbt-compatible Mill shape to `ScalaModule` defaults. Production sources now
 live under `app/src`, tests under `app/test/src`, and `build.mill` declares
@@ -1901,17 +1922,19 @@ engine used by plain CLI mode.
 
 The strict queue for subsequent implementation and validation iterations is in
 `.agent-loop/tasks.json`. All refreshed tasks are pending at the time of this
-analysis iteration. The earlier T001-T037 queue completed the manifest loader,
-execution engine, installers, CLI/TUI wiring, README, and final validation. The
-new queue focuses only on remaining concrete gaps from the original goals and
-recorded risks.
+analysis iteration. The earlier queues completed the manifest loader, execution
+engine, supported installers, source setup execution, CLI/TUI wiring, TUI smoke
+coverage, formatter validation, README/docs, and final validation. The new queue
+focuses only on the remaining production-quality refactor goal and recorded
+risks, with validation before and after behavior-preserving refactors.
 
-- T001 Implement source setup execution (feature, complex)
-- T002 Run source setup before installs (feature, complex)
-- T003 Run source setup checkpoint (validation, simple)
-- T004 Automate TUI smoke coverage (improvement, moderate)
-- T005 Expose formatter validation (chore, moderate)
-- T006 Run final validation (validation, simple)
+- T001 Run production-quality baseline validation (validation, simple)
+- T002 Audit Scala refactor targets (improvement, moderate)
+- T003 Refactor core execution boundaries (improvement, complex)
+- T004 Refactor user-facing orchestration (improvement, complex)
+- T005 Run refactor checkpoint (validation, simple)
+- T006 Tighten contracts and regression coverage (improvement, moderate)
+- T007 Run final production-quality validation (validation, simple)
 
 Progress note, 2026-06-28: T013 added JSON execution state persistence in the
 `core` module. State now records manifest identity (`metadata.name`,
@@ -2385,3 +2408,18 @@ passed. No source fix was needed. Remaining risk: the GitHub release
 `app.nativeImage` path was not run locally because `native-image` is not on
 PATH in this environment; full-screen manual TUI behavior remains covered by
 terminal-free tests, the noninteractive TUI smoke, and `tui --help`.
+
+Validation baseline T001, 2026-06-29: the production-quality refactor queue was
+validated before refactoring work. Mill discovery passed for
+`./mill --no-daemon resolve _`, listing `app`, `cli`, `config`, `core`, `host`,
+`selective`, and `tui`. Recursive compile and tests passed. The first
+project-native scalafmt check failed on ten existing Scala files, so
+`./mill mill.scalalib.scalafmt/reformatAll` was run once as a mechanical
+formatter fix; after that, recursive compile, recursive tests, and
+`./mill mill.scalalib.scalafmt/checkFormatAll` all passed. Root, `apply`, and
+`tui` help smokes exited successfully. The dry-run smoke with `--state
+/tmp/initkit-production-quality-baseline-state.json` exited 0 and did not
+create the throwaway state file. `jq empty .agent-loop/tasks.json`,
+`jq empty .agent-loop/config.json`, and `git diff --check` passed. Remaining
+risk is limited to future behavior-preserving refactor work, which should keep
+using broad validation after core or user-facing orchestration changes.

@@ -58,8 +58,7 @@ final class ShellScriptsExecutor(
       case Left(error)     => Left(ShellScriptFailure.TempFile(item.name, error.message))
       case Right(tempPath) =>
         try downloadAndRun(item, tempPath)
-        finally
-          if item.cleanup.getOrElse(true) then files.deleteIfExists(tempPath)
+        finally if item.cleanup.getOrElse(true) then files.deleteIfExists(tempPath)
 
   private def downloadAndRun(
       item: ShellScriptItem,

@@ -35,10 +35,10 @@ final class FileWritesExecutor(
     var stopped  = false
 
     steps.foreach:
-      case FileWriteExecutionStep.Skipped(_, _) => skipped += 1
+      case FileWriteExecutionStep.Skipped(_, _)           => skipped += 1
       case FileWriteExecutionStep.Write(item) if !stopped =>
         writeItem(item) match
-          case Right(()) => written += 1
+          case Right(())     => written += 1
           case Left(failure) =>
             failures = failures :+ failure
             if operation.execution.failFast then stopped = true
@@ -57,12 +57,11 @@ final class FileWritesExecutor(
   private def writeItem(
       item: FileWriteItem
   ): Either[FileWriteFailure, Unit] = files.createTempFile(item.name) match
-    case Left(error) => Left(FileWriteFailure.File(item.name, error.message))
+    case Left(error)     => Left(FileWriteFailure.File(item.name, error.message))
     case Right(tempPath) =>
-      try
-        files.writeTempFile(tempPath, item.content) match
+      try files.writeTempFile(tempPath, item.content) match
           case Left(error) => Left(FileWriteFailure.File(item.name, error.message))
-          case Right(())  =>
+          case Right(())   =>
             val result = commandExecutor.run(FileWritesExecutor.installCommand(item, tempPath))
             if result.succeeded then Right(())
             else Left(FileWriteFailure.Command(result))
@@ -84,12 +83,12 @@ private enum FileWriteFailure:
 
   def message: String = this match
     case File(itemName, detail) => s"$itemName file operation failed: $detail"
-    case Command(result) =>
+    case Command(result)        =>
       s"${CommandsExecutor.describe(result.spec)} (${CommandsExecutor.describeTermination(result.termination)})"
 
   def exitCode: Option[Int] = this match
-    case File(_, _)       => None
-    case Command(result)  => result.exitCode
+    case File(_, _)      => None
+    case Command(result) => result.exitCode
 
 trait FileWriteFiles:
   def createTempFile(itemName: String): Either[FileWriteFileError, Path]
@@ -140,30 +139,30 @@ object FileWritesExecutor:
       policy: ExecutionPolicy,
       hostFacts: HostFacts,
       files: FileWriteFiles
-  ): Vector[FileWriteExecutionStep] =
-    operation.spec.items.map: item =>
-      val condition = ConditionEvaluator.evaluate(item.when, hostFacts)
-      if condition.matched then FileWriteExecutionStep.Write(item)
-      else FileWriteExecutionStep.Skipped(item, condition.userFacingSkipReasons)
+  ): Vector[FileWriteExecutionStep] = operation.spec.items.map: item =>
+    val condition = ConditionEvaluator.evaluate(item.when, hostFacts)
+    if condition.matched then FileWriteExecutionStep.Write(item)
+    else FileWriteExecutionStep.Skipped(item, condition.userFacingSkipReasons)
 
-  def installCommand(item: FileWriteItem, tempPath: Path): CommandSpec =
-    CommandSpec.direct(
-      argv = installArgv(item, tempPath).map(CommandArgument(_)),
-      sudo = if item.sudo.contains(true) then SudoMode.Required else SudoMode.Disabled,
-      timeout = Some(5.minutes)
-    )
+  def installCommand(item: FileWriteItem, tempPath: Path): CommandSpec = CommandSpec.direct(
+    argv = installArgv(item, tempPath).map(CommandArgument(_)),
+    sudo = if item.sudo.contains(true) then SudoMode.Required else SudoMode.Disabled,
+    timeout = Some(5.minutes)
+  )
 
   def dryRunData(
       summary: PlanOperationSummary,
       steps: Vector[FileWriteExecutionStep]
   ): DryRunOperationData = DryRunOperationData(summary, steps.map(dryRunAction))
 
-  private def installArgv(item: FileWriteItem, tempPath: Path): Vector[String] =
-    Vector("install", "-D") ++
-      item.mode.toVector.flatMap(mode => Vector("-m", mode)) ++
-      item.owner.toVector.flatMap(owner => Vector("-o", owner)) ++
-      item.group.toVector.flatMap(group => Vector("-g", group)) ++
-      Vector(tempPath.toString, item.path)
+  private def installArgv(
+      item: FileWriteItem,
+      tempPath: Path
+  ): Vector[String] = Vector("install", "-D") ++
+    item.mode.toVector.flatMap(mode => Vector("-m", mode)) ++
+    item.owner.toVector.flatMap(owner => Vector("-o", owner)) ++
+    item.group.toVector.flatMap(group => Vector("-g", group)) ++
+    Vector(tempPath.toString, item.path)
 
   private def dryRunAction(step: FileWriteExecutionStep): DryRunAction = step match
     case FileWriteExecutionStep.Write(item) =>

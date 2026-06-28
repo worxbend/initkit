@@ -32,7 +32,7 @@ final class CommandsExecutor(
     var stopped = false
 
     steps.foreach:
-      case step: CommandExecutionStep.Skipped               => skipped = skipped :+ step
+      case step: CommandExecutionStep.Skipped                  => skipped = skipped :+ step
       case CommandExecutionStep.Run(item, command) if !stopped =>
         if shouldSkipByUnless(item) then
           skipped = skipped :+ CommandExecutionStep.Skipped(
@@ -157,15 +157,15 @@ object CommandsExecutor:
       Vector(DryRunAction.Message(s"skip command '${item.name}': ${reasons.mkString("; ")}"))
 
   private def dryRunCommand(command: CommandSpec): DryRunAction = command.redacted.invocation match
-        case RedactedCommandInvocation.Direct(argv) => DryRunAction.Command(
-            argv = argv,
-            shell = None,
-            sudo = command.sudo == SudoMode.Required,
-            workingDirectory = command.cwd.map(_.toString)
-          )
-        case RedactedCommandInvocation.Shell(commandText, shell) => DryRunAction.Command(
-            argv = Vector(commandText),
-            shell = Some(shell.mkString(" ")),
-            sudo = command.sudo == SudoMode.Required,
-            workingDirectory = command.cwd.map(_.toString)
-          )
+    case RedactedCommandInvocation.Direct(argv) => DryRunAction.Command(
+        argv = argv,
+        shell = None,
+        sudo = command.sudo == SudoMode.Required,
+        workingDirectory = command.cwd.map(_.toString)
+      )
+    case RedactedCommandInvocation.Shell(commandText, shell) => DryRunAction.Command(
+        argv = Vector(commandText),
+        shell = Some(shell.mkString(" ")),
+        sudo = command.sudo == SudoMode.Required,
+        workingDirectory = command.cwd.map(_.toString)
+      )

@@ -248,9 +248,8 @@ object PackageManagerInstallers:
   private def dnfCommandSpecs(
       spec: PackageSpec.Dnf,
       policy: ExecutionPolicy
-  ): Vector[CommandSpec] =
-    dnfActionCommandSpecs(spec.actions, policy) ++
-      spec.install.map(packageName => direct(Vector("dnf", "install", "-y", packageName), policy))
+  ): Vector[CommandSpec] = dnfActionCommandSpecs(spec.actions, policy) ++
+    spec.install.map(packageName => direct(Vector("dnf", "install", "-y", packageName), policy))
 
   private def zypperCommandSpecs(
       spec: PackageSpec.Zypper,
@@ -297,22 +296,18 @@ object PackageManagerInstallers:
       )
     )
 
-  private def cargoCommandSpecs(spec: PackageSpec.Cargo): Vector[CommandSpec] =
-    spec.installer match
-      case Some("cargo") | Some("cargo-install") =>
-        spec.install.map(packageName =>
-          CommandSpec.direct(Vector("cargo", "install", packageName).map(CommandArgument(_)))
+  private def cargoCommandSpecs(spec: PackageSpec.Cargo): Vector[CommandSpec] = spec.installer match
+    case Some("cargo") | Some("cargo-install") => spec.install.map(packageName =>
+        CommandSpec.direct(Vector("cargo", "install", packageName).map(CommandArgument(_)))
+      )
+    case Some("cargo-binstall") | None => spec.install.map(packageName =>
+        CommandSpec.direct(
+          Vector("cargo", "binstall", "-y", packageName).map(CommandArgument(_))
         )
-      case Some("cargo-binstall") | None =>
-        spec.install.map(packageName =>
-          CommandSpec.direct(
-            Vector("cargo", "binstall", "-y", packageName).map(CommandArgument(_))
-          )
-        )
-      case Some(other) =>
-        spec.install.map(packageName =>
-          CommandSpec.direct(Vector(other, packageName).map(CommandArgument(_)))
-        )
+      )
+    case Some(other) => spec.install.map(packageName =>
+        CommandSpec.direct(Vector(other, packageName).map(CommandArgument(_)))
+      )
 
   private def sdkmanCommandSpecs(spec: PackageSpec.Sdkman): Vector[CommandSpec] =
     spec.install.map: item =>
@@ -353,7 +348,7 @@ object PackageManagerInstallers:
       case "check-update" =>
         direct(Vector("dnf", "check-update") ++ action.args, policy, allowedExitCodes = Set(0, 100))
       case "upgrade" => direct(Vector("dnf", "upgrade", "-y") ++ action.args, policy)
-      case "swap" => direct(Vector("dnf", "swap", "-y") ++ action.args, policy)
+      case "swap"    => direct(Vector("dnf", "swap", "-y") ++ action.args, policy)
       case "groupupdate" | "group-update" =>
         direct(Vector("dnf", "groupupdate", "-y") ++ action.args, policy)
       case other => direct(Vector("dnf", other) ++ action.args, policy)
@@ -363,9 +358,12 @@ object PackageManagerInstallers:
       policy: ExecutionPolicy
   ): Vector[CommandSpec] = actions.map: action =>
     action.action match
-      case "refresh" => direct(Vector("zypper", "--non-interactive", "refresh") ++ action.args, policy)
-      case "update"  => direct(Vector("zypper", "--non-interactive", "update", "-y") ++ action.args, policy)
-      case "dup"     => direct(Vector("zypper", "--non-interactive", "dup", "-y") ++ action.args, policy)
+      case "refresh" =>
+        direct(Vector("zypper", "--non-interactive", "refresh") ++ action.args, policy)
+      case "update" =>
+        direct(Vector("zypper", "--non-interactive", "update", "-y") ++ action.args, policy)
+      case "dup" =>
+        direct(Vector("zypper", "--non-interactive", "dup", "-y") ++ action.args, policy)
       case "dup-from" => direct(
           Vector("zypper", "--non-interactive", "dup", "-y", "--from") ++ action.args,
           policy

@@ -374,8 +374,32 @@ object InstallerSpecDecoder:
         decodeAllowedExitCodes(fields, s"$at.allowedExitCodes"),
         decodeOptionalString(fields, "confirm", s"$at.confirm"),
         decodeOptionalPositiveInt(fields, "timeout", s"$at.timeout")
-      ).map { case (name, run, sudo, when, cwd, env, creates, unless, allowedExitCodes, confirm, timeout) =>
-        CommandItem(name, run, sudo, when, cwd, env, creates, unless, allowedExitCodes, confirm, timeout)
+      ).map {
+        case (
+              name,
+              run,
+              sudo,
+              when,
+              cwd,
+              env,
+              creates,
+              unless,
+              allowedExitCodes,
+              confirm,
+              timeout
+            ) => CommandItem(
+            name,
+            run,
+            sudo,
+            when,
+            cwd,
+            env,
+            creates,
+            unless,
+            allowedExitCodes,
+            confirm,
+            timeout
+          )
       }
     case other => Left(Vector(error(at, s"must be a mapping, found ${kindOf(other)}")))
 
@@ -558,14 +582,16 @@ object InstallerSpecDecoder:
       fields: VectorMap[String, RawYaml],
       at: String
   ): Either[Vector[ManifestValidationError], Vector[EnvironmentEntry]] = fields.get("env") match
-    case None => Right(Vector.empty)
-    case Some(RawYaml.MappingValue(envFields)) =>
-      sequence(envFields.toVector.map { case (name, value) =>
-        decodeString(value, s"$at.$name").map(EnvironmentEntry(name, _, sensitive = None))
+    case None                                  => Right(Vector.empty)
+    case Some(RawYaml.MappingValue(envFields)) => sequence(envFields.toVector.map {
+        case (name, value) =>
+          decodeString(value, s"$at.$name").map(EnvironmentEntry(name, _, sensitive = None))
       })
-    case Some(RawYaml.SequenceValue(items)) =>
-      sequence(items.zipWithIndex.map((item, index) => decodeEnvironmentEntry(item, s"$at[$index]")))
-    case Some(other) => Left(Vector(error(at, s"must be a mapping or sequence, found ${kindOf(other)}")))
+    case Some(RawYaml.SequenceValue(items)) => sequence(items.zipWithIndex.map((item, index) =>
+        decodeEnvironmentEntry(item, s"$at[$index]")
+      ))
+    case Some(other) =>
+      Left(Vector(error(at, s"must be a mapping or sequence, found ${kindOf(other)}")))
 
   private def decodeEnvironmentEntry(
       raw: RawYaml,
@@ -582,7 +608,7 @@ object InstallerSpecDecoder:
       fields: VectorMap[String, RawYaml],
       at: String
   ): Either[Vector[ManifestValidationError], ShellScriptMode] = fields.get("mode") match
-    case None => Right(ShellScriptMode.Unattended)
+    case None                             => Right(ShellScriptMode.Unattended)
     case Some(RawYaml.StringValue(value)) => value.trim match
         case "interactive" => Right(ShellScriptMode.Interactive)
         case "unattended"  => Right(ShellScriptMode.Unattended)
@@ -593,7 +619,7 @@ object InstallerSpecDecoder:
       fields: VectorMap[String, RawYaml],
       at: String
   ): Either[Vector[ManifestValidationError], ShellScriptDownloadMode] = fields.get("download") match
-    case None => Right(ShellScriptDownloadMode.File)
+    case None                             => Right(ShellScriptDownloadMode.File)
     case Some(RawYaml.StringValue(value)) => value.trim match
         case "stdin" => Right(ShellScriptDownloadMode.Stdin)
         case "file"  => Right(ShellScriptDownloadMode.File)
@@ -613,8 +639,9 @@ object InstallerSpecDecoder:
       raw: RawYaml,
       at: String
   ): Either[Vector[ManifestValidationError], BinarySymlink] = raw match
-    case RawYaml.StringValue(value) if value.trim.nonEmpty => Right(BinarySymlink(value, None, None))
-    case RawYaml.StringValue(_) => Left(Vector(error(at, "must not be empty")))
+    case RawYaml.StringValue(value) if value.trim.nonEmpty =>
+      Right(BinarySymlink(value, None, None))
+    case RawYaml.StringValue(_)       => Left(Vector(error(at, "must not be empty")))
     case RawYaml.MappingValue(fields) => combine(
         decodeRequiredString(fields, "path", s"$at.path"),
         decodeOptionalString(fields, "target", s"$at.target"),
@@ -700,8 +727,7 @@ object InstallerSpecDecoder:
       eighth: Either[Vector[ManifestValidationError], H]
   ): Either[Vector[ManifestValidationError], (A, B, C, D, E, F, G, H)] =
     combine(first, second, third, fourth, fifth, sixth, seventh).flatMap:
-      case (a, b, c, d, e, f, g) =>
-        eighth match
+      case (a, b, c, d, e, f, g) => eighth match
           case Right(h) => Right((a, b, c, d, e, f, g, h))
           case Left(_)  => Left(leftErrors(eighth))
 
@@ -719,8 +745,19 @@ object InstallerSpecDecoder:
       eleventh: Either[Vector[ManifestValidationError], K]
   ): Either[Vector[ManifestValidationError], (A, B, C, D, E, F, G, H, I, J, K)] =
     (first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth, eleventh) match
-      case (Right(a), Right(b), Right(c), Right(d), Right(e), Right(f), Right(g), Right(h), Right(i), Right(j), Right(k)) =>
-        Right((a, b, c, d, e, f, g, h, i, j, k))
+      case (
+            Right(a),
+            Right(b),
+            Right(c),
+            Right(d),
+            Right(e),
+            Right(f),
+            Right(g),
+            Right(h),
+            Right(i),
+            Right(j),
+            Right(k)
+          ) => Right((a, b, c, d, e, f, g, h, i, j, k))
       case _ => Left(leftErrors(first) ++ leftErrors(second) ++ leftErrors(third) ++
           leftErrors(fourth) ++ leftErrors(fifth) ++ leftErrors(sixth) ++ leftErrors(seventh) ++
           leftErrors(eighth) ++ leftErrors(ninth) ++ leftErrors(tenth) ++ leftErrors(eleventh))

@@ -125,20 +125,20 @@ object PackageSpecDecoder:
       entryName: Option[String],
       allowActionOnly: Boolean,
       installFieldPresent: Boolean
-  )(build: (A, Vector[String], Vector[PackageAction]) => D): Either[Vector[ManifestValidationError], D] =
-    combine(first, second, third).flatMap:
-      case (_, install, actions) if install.isEmpty && actions.isEmpty && !allowActionOnly =>
-        if installFieldPresent then
-          Left(Vector(error(
-            s"$specAt.install",
-            withEntryName(entryName, "must contain at least one package")
-          )))
-        else
-          Left(Vector(error(
-            specAt,
-            withEntryName(entryName, "must define at least one install item or action")
-          )))
-      case (a, b, c) => Right(build(a, b, c))
+  )(build: (A, Vector[String], Vector[PackageAction]) => D)
+      : Either[Vector[ManifestValidationError], D] = combine(first, second, third).flatMap:
+    case (_, install, actions) if install.isEmpty && actions.isEmpty && !allowActionOnly =>
+      if installFieldPresent then
+        Left(Vector(error(
+          s"$specAt.install",
+          withEntryName(entryName, "must contain at least one package")
+        )))
+      else
+        Left(Vector(error(
+          specAt,
+          withEntryName(entryName, "must define at least one install item or action")
+        )))
+    case (a, b, c) => Right(build(a, b, c))
 
   private def combine[A, B](
       first: Either[Vector[ManifestValidationError], A],
@@ -181,8 +181,7 @@ object PackageSpecDecoder:
       fields: VectorMap[String, RawYaml],
       specAt: String
   ): Either[Vector[ManifestValidationError], Vector[String]] = fields.get("install") match
-    case Some(RawYaml.SequenceValue(items)) =>
-      sequence(items.zipWithIndex.map((item, index) =>
+    case Some(RawYaml.SequenceValue(items)) => sequence(items.zipWithIndex.map((item, index) =>
         decodeString(item, s"$specAt.install[$index]")
       ))
     case Some(other) => Left(Vector(error(
@@ -195,8 +194,7 @@ object PackageSpecDecoder:
       fields: VectorMap[String, RawYaml],
       specAt: String
   ): Either[Vector[ManifestValidationError], Vector[PackageAction]] = fields.get("actions") match
-    case Some(RawYaml.SequenceValue(items)) =>
-      sequence(items.zipWithIndex.map((item, index) =>
+    case Some(RawYaml.SequenceValue(items)) => sequence(items.zipWithIndex.map((item, index) =>
         decodeAction(item, s"$specAt.actions[$index]")
       ))
     case Some(other) => Left(Vector(error(
@@ -209,13 +207,15 @@ object PackageSpecDecoder:
       raw: RawYaml,
       at: String
   ): Either[Vector[ManifestValidationError], PackageAction] = raw match
-    case RawYaml.StringValue(value) if value.trim.nonEmpty => Right(PackageAction(value, Vector.empty))
-    case RawYaml.StringValue(_) => Left(Vector(error(at, "must not be empty")))
+    case RawYaml.StringValue(value) if value.trim.nonEmpty =>
+      Right(PackageAction(value, Vector.empty))
+    case RawYaml.StringValue(_)       => Left(Vector(error(at, "must not be empty")))
     case RawYaml.MappingValue(fields) => combine(
         decodeRequiredString(fields, "action", s"$at.action"),
         decodeStringSequence(fields, "args", s"$at.args")
       ).map { case (action, args) => PackageAction(action, args) }
-    case other => Left(Vector(error(at, s"must be an action name or mapping, found ${kindOf(other)}")))
+    case other =>
+      Left(Vector(error(at, s"must be an action name or mapping, found ${kindOf(other)}")))
 
   private def decodeSnapInstallList(
       fields: VectorMap[String, RawYaml],
@@ -277,7 +277,7 @@ object PackageSpecDecoder:
       raw: RawYaml,
       at: String
   ): Either[Vector[ManifestValidationError], SdkmanPackage] = raw match
-    case RawYaml.StringValue(value) => decodeString(raw, at).map(SdkmanPackage(_, None))
+    case RawYaml.StringValue(value)   => decodeString(raw, at).map(SdkmanPackage(_, None))
     case RawYaml.MappingValue(fields) => combine(
         decodeRequiredString(fields, "candidate", s"$at.candidate"),
         decodeOptionalString(fields, "version", s"$at.version")
@@ -323,7 +323,7 @@ object PackageSpecDecoder:
       key: String,
       at: String
   ): Either[Vector[ManifestValidationError], Vector[String]] = fields.get(key) match
-    case None                          => Right(Vector.empty)
+    case None                               => Right(Vector.empty)
     case Some(RawYaml.SequenceValue(items)) =>
       sequence(items.zipWithIndex.map((item, index) => decodeString(item, s"$at[$index]")))
     case Some(other) => Left(Vector(error(at, s"must be a sequence, found ${kindOf(other)}")))

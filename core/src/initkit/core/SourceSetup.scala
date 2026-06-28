@@ -318,7 +318,7 @@ object SourceSetupGenerator:
       sources: ZypperSources,
       policy: ExecutionPolicy
   ): Vector[SourceSetupOperation] =
-    val keys = sources.keyImports.map(rpmKeyImportOperation(_, policy))
+    val keys  = sources.keyImports.map(rpmKeyImportOperation(_, policy))
     val repos = sources.repositories.map: repository =>
       val refresh =
         Option.when(repository.autoRefresh.contains(true))(CommandArgument("--refresh")).toVector

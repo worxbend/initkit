@@ -217,14 +217,12 @@ object ManifestLoader:
         optionalSequence(fields, "releasePackages", "spec.sources.dnf.releasePackages").flatMap:
           case Some(items) => decodeReleasePackages(items, "spec.sources.dnf.releasePackages")
           case None        => Right(Vector.empty)
-      keyImports <-
-        optionalSequence(fields, "keyImports", "spec.sources.dnf.keyImports").flatMap:
-          case Some(items) => decodeGpgKeyImports(items, "spec.sources.dnf.keyImports")
-          case None        => Right(Vector.empty)
-      commands <-
-        optionalSequence(fields, "commands", "spec.sources.dnf.commands").flatMap:
-          case Some(items) => decodeSourceCommands(items, "spec.sources.dnf.commands")
-          case None        => Right(Vector.empty)
+      keyImports <- optionalSequence(fields, "keyImports", "spec.sources.dnf.keyImports").flatMap:
+        case Some(items) => decodeGpgKeyImports(items, "spec.sources.dnf.keyImports")
+        case None        => Right(Vector.empty)
+      commands <- optionalSequence(fields, "commands", "spec.sources.dnf.commands").flatMap:
+        case Some(items) => decodeSourceCommands(items, "spec.sources.dnf.commands")
+        case None        => Right(Vector.empty)
     yield DnfSources(
       repositories = repositories,
       releasePackages = releasePackages,
@@ -262,10 +260,9 @@ object ManifestLoader:
         optionalSequence(fields, "keyImports", "spec.sources.zypper.keyImports").flatMap:
           case Some(items) => decodeGpgKeyImports(items, "spec.sources.zypper.keyImports")
           case None        => Right(Vector.empty)
-      commands <-
-        optionalSequence(fields, "commands", "spec.sources.zypper.commands").flatMap:
-          case Some(items) => decodeSourceCommands(items, "spec.sources.zypper.commands")
-          case None        => Right(Vector.empty)
+      commands <- optionalSequence(fields, "commands", "spec.sources.zypper.commands").flatMap:
+        case Some(items) => decodeSourceCommands(items, "spec.sources.zypper.commands")
+        case None        => Right(Vector.empty)
     yield ZypperSources(repositories = repositories, keyImports = keyImports, commands = commands)
 
   private def decodeZypperRepositories(items: Vector[RawYaml])

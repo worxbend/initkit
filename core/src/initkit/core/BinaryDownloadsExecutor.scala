@@ -127,23 +127,25 @@ final class BinaryDownloadsExecutor(
       downloadedPath: Path,
       destination: Path
   ): Either[BinaryDownloadFailure, Unit] = item.archive match
-    case None => installFile(item, downloadedPath, destination)
+    case None          => installFile(item, downloadedPath, destination)
     case Some(archive) => archive.archiveType match
         case ArchiveType.TarGz => extractNativeArchive(
             item,
             destination,
-            path => BinaryTarGzExtractor
-              .extractSelectedFile(downloadedPath, archive, path)
-              .left
-              .map(_.message)
+            path =>
+              BinaryTarGzExtractor
+                .extractSelectedFile(downloadedPath, archive, path)
+                .left
+                .map(_.message)
           )
         case ArchiveType.Zip => extractNativeArchive(
             item,
             destination,
-            path => BinaryZipExtractor
-              .extractSelectedFile(downloadedPath, archive, path)
-              .left
-              .map(_.message)
+            path =>
+              BinaryZipExtractor
+                .extractSelectedFile(downloadedPath, archive, path)
+                .left
+                .map(_.message)
           )
         case ArchiveType.TarXz =>
           files.createTempDownload(s"${item.name}-archive-member", destination) match
@@ -279,7 +281,7 @@ private object BinaryZipExtractor:
       archive: Archive,
       destination: Path
   ): Either[BinaryZipExtractionError, Unit] =
-    val selectedPath = normalizeZipPath(archive.path)
+    val selectedPath    = normalizeZipPath(archive.path)
     val stripComponents = archive.stripComponents.getOrElse(0)
     try
       val input = ZipInputStream(Files.newInputStream(archivePath))
