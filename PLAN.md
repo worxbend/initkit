@@ -39,7 +39,7 @@ The application has two user-facing modes:
 
 Use the existing JVM/Scala stack in this repository.
 
-- Scala 3, currently `3.8.2` in `build.mill`
+- Scala 3, currently `3.8.2` in the existing build metadata
 - Mill, using the checked-in `./mill` launcher
 - JDK 21 or newer, required by Ox
 - uTest for unit tests
@@ -47,22 +47,41 @@ Use the existing JVM/Scala stack in this repository.
 - upickle for JSON output where already used
 - SnakeYAML Engine, or another maintained JVM YAML parser, for manifest loading
 - picocli for command-line parsing
+- fansi for colorful plain CLI output
 - TamboUI for terminal UI flows
 - Ox for structured concurrency, bounded parallelism, cancellation, retries, and timeouts
 - sttp client4 for HTTP downloads
 
 Build-file expectations:
 
-- keep dependencies centralized in `build.mill`
+- prefer declarative Mill YAML files: `build.mill.yaml` and module-local `package.mill.yaml` for simple module configuration
+- use module-local `package.mill` files when a subfolder needs programmable build logic or custom reusable targets
+- use a multi-module build; keep module dependencies explicit, acyclic, and meaningful
+- use Mill `ScalaModule`, not `SbtModule`
+- define each Scala module with `extends: ScalaModule`
+- define tests as module-local `<module>/test/package.mill.yaml` files extending `[build.<module>.ScalaTests, TestModule.Utest]`
+- migrate source layout to Mill's ScalaModule defaults: `<module>/src` and `<module>/test/src`
+- split build logic by subfolder so modules can be compiled independently when their `package.mill` or `package.mill.yaml` changes
+- use programmable `build.mill` or `package.mill` only if YAML cannot express a required customization
+- promote reusable utilities, fixtures, code generators, packaging logic, or other extractable pieces to dedicated Mill modules/targets instead of hiding them in `app` or a generic `util` package
 - remove `mainargs` after picocli command parsing is in place
 - add `info.picocli:picocli:4.7.7` unless a newer compatible version is selected deliberately
+- add `com.lihaoyi::fansi:0.5.1`, latest stable checked on 2026-06-28, to the CLI module for terminal styling
 - add `org.snakeyaml:snakeyaml-engine:3.0.1`, latest stable checked on 2026-06-28
 - add `com.softwaremill.ox::core:1.0.5`, latest stable checked on 2026-06-28
 - add `com.softwaremill.sttp.client4::core:4.0.25`, latest stable checked on 2026-06-28
 - before implementation, re-check Maven Central and use newer stable releases if available
+- add `.scalafmt.conf` before substantial implementation work; use Scala 3 dialect and document the Mill command that checks formatting
 - keep the TamboUI snapshot repository configured because TamboUI is currently published as snapshots
 - keep existing TamboUI modules already in use
 - consider adding `dev.tamboui:tamboui-picocli:<same snapshot version>` when the TUI command is wired through picocli
+
+Progress note, 2026-06-28: T001 migrated the current workspace from the
+sbt-compatible Mill shape to `ScalaModule` defaults. Production sources now
+live under `app/src`, tests under `app/test/src`, and `build.mill` declares
+`object app extends ScalaModule` with `object test extends ScalaTests`. README
+commands remain accurate because the module name and `app.run`/`app.test`
+targets did not change. `./mill __.compile` and `./mill __.test` both pass.
 
 Progress note, 2026-06-28: T001 updated `build.mill` with picocli, SnakeYAML
 Engine, Ox core, and sttp client4 versions from canonical Maven metadata and
@@ -200,6 +219,405 @@ Use picocli's Scala-compatible annotation style:
 - start the CLI through `new CommandLine(new RootCommand()).execute(args: _*)`
 - call `System.exit(exitCode)` from the application entrypoint
 
+## Project Organization
+
+Use a multi-module Mill build with `ScalaModule`. Prefer declarative YAML for
+ordinary module configuration, and use co-located `package.mill` files for
+subfolders that need custom build tasks or reusable build targets.
+
+```text
+build.mill.yaml
+buildtools/
+  package.mill
+  src/initkit/build/...
+common/
+  package.mill.yaml
+  src/initkit/common/...
+  test/package.mill.yaml
+  test/src/initkit/common/...
+config/
+  package.mill.yaml
+  src/initkit/config/...
+  test/package.mill.yaml
+  test/src/initkit/config/...
+core/
+  package.mill.yaml
+  src/initkit/{platform,resolve,state,logging}/...
+  test/package.mill.yaml
+  test/src/initkit/{platform,resolve,state,logging}/...
+command/
+  package.mill.yaml
+  src/initkit/command/...
+  test/package.mill.yaml
+  test/src/initkit/command/...
+download/
+  package.mill.yaml
+  src/initkit/download/...
+  test/package.mill.yaml
+  test/src/initkit/download/...
+installers/
+  package.mill.yaml
+  src/initkit/installers/...
+  test/package.mill.yaml
+  test/src/initkit/installers/...
+cli/
+  package.mill.yaml
+  src/initkit/cli/...
+  test/package.mill.yaml
+  test/src/initkit/cli/...
+tui/
+  package.mill.yaml
+  src/initkit/tui/...
+  test/package.mill.yaml
+  test/src/initkit/tui/...
+app/
+  package.mill.yaml
+  src/initkit/Main.scala
+  test/package.mill.yaml
+  test/src/initkit/...
+dist/
+  package.mill
+```
+
+The current repository now uses a single root `build.mill` `ScalaModule` with
+Mill's default source layout. Future module-splitting work can still move to
+Mill's declarative YAML `ScalaModule` configuration where it fits the planned
+multi-module structure.
+
+Use `build.mill.yaml` for shared defaults and workspace-level configuration
+where possible, and `package.mill.yaml` for concrete modules that only need
+simple settings. Use `package.mill` inside a subfolder when that subfolder owns
+custom tasks, generated sources, reusable build traits, packaging commands, or
+other build logic that should compile independently from the rest of the build.
+
+Keep the Mill version pinned by the checked-in Mill launcher/version metadata;
+do not invent unsupported version keys inside module YAML files.
+
+Dedicated reusable modules and targets:
+
+- `common`: small shared domain primitives, ADTs, error helpers, and pure utility code used by at least two production modules
+- `buildtools`: build-only helper code, custom Mill traits, generated source helpers, or target definitions; keep it out of runtime dependencies
+- `testkit`: add only if multiple modules need shared fakes, fixtures, temp-file helpers, or assertion helpers
+- `dist`: packaging and distribution targets such as assembly, launcher scripts, checksums, release archives, or installable bundles
+
+Do not create a shared module just because a helper exists. Extract only when
+there is a clear second consumer, a clean standalone responsibility, or a build
+target that should be callable directly from Mill. When extracted, expose it as
+a named module/target with a stable command path such as `./mill common.test`,
+`./mill buildtools.checkBuildMetadata`, or `./mill dist.archive`.
+
+Target module examples:
+
+```yaml
+# common/package.mill.yaml
+extends: ScalaModule
+scalaVersion: 3.8.2
+mvnDeps:
+- com.lihaoyi::upickle:4.4.3
+```
+
+```yaml
+# config/package.mill.yaml
+extends: ScalaModule
+scalaVersion: 3.8.2
+moduleDeps: [common]
+mvnDeps:
+- org.snakeyaml:snakeyaml-engine:3.0.1
+```
+
+```yaml
+# core/package.mill.yaml
+extends: ScalaModule
+scalaVersion: 3.8.2
+moduleDeps: [common, config]
+mvnDeps:
+- com.lihaoyi::os-lib:0.11.8
+- com.softwaremill.ox::core:1.0.5
+```
+
+```yaml
+# command/package.mill.yaml
+extends: ScalaModule
+scalaVersion: 3.8.2
+moduleDeps: [core]
+```
+
+```yaml
+# download/package.mill.yaml
+extends: ScalaModule
+scalaVersion: 3.8.2
+moduleDeps: [core]
+mvnDeps:
+- com.softwaremill.sttp.client4::core:4.0.25
+```
+
+```yaml
+# installers/package.mill.yaml
+extends: ScalaModule
+scalaVersion: 3.8.2
+moduleDeps: [config, core, command, download]
+```
+
+```yaml
+# cli/package.mill.yaml
+extends: ScalaModule
+scalaVersion: 3.8.2
+moduleDeps: [config, core, installers]
+mvnDeps:
+- info.picocli:picocli:4.7.7
+- com.lihaoyi::fansi:0.5.1
+```
+
+```yaml
+# tui/package.mill.yaml
+extends: ScalaModule
+scalaVersion: 3.8.2
+moduleDeps: [config, core, installers]
+mvnDeps:
+- dev.tamboui:tamboui-toolkit:0.5.0-SNAPSHOT
+- dev.tamboui:tamboui-jline3-backend:0.5.0-SNAPSHOT
+```
+
+```yaml
+# app/package.mill.yaml
+extends: ScalaModule
+scalaVersion: 3.8.2
+moduleDeps: [cli, tui]
+mainClass: initkit.Main
+```
+
+Use a separate test module per production module:
+
+```yaml
+# config/test/package.mill.yaml
+extends: [build.config.ScalaTests, TestModule.Utest]
+mvnDeps: [com.lihaoyi::utest:0.9.5]
+```
+
+Repeat the same test-module pattern for `common`, `core`, `command`,
+`download`, `installers`, `cli`, `tui`, and `app`, replacing
+`build.config.ScalaTests` with the matching parent module, for example
+`build.core.ScalaTests` or `build.app.ScalaTests`.
+
+Programmable subfolder examples:
+
+```scala
+// buildtools/package.mill
+package build.buildtools
+
+import mill.*
+
+object `package` extends RootModule {
+  def checkBuildMetadata = Task.Command {
+    // Build-only validation target. Keep runtime modules independent from this.
+  }
+}
+```
+
+```scala
+// dist/package.mill
+package build.dist
+
+import mill.*
+
+object `package` extends RootModule {
+  def archive = Task.Command {
+    // Distribution target that can depend on app assembly outputs when wired.
+  }
+}
+```
+
+Use Mill's module commands after migration:
+
+```bash
+./mill common.compile
+./mill config.compile
+./mill core.compile
+./mill installers.compile
+./mill dist.archive
+./mill app.run --help
+./mill __.test
+```
+
+Organize production code by responsibility, not by technical file type:
+
+```text
+app/src/initkit/
+  Main.scala                         # tiny application entrypoint
+cli/src/initkit/cli/
+  InitkitCommand.scala               # picocli root command
+  ApplyCommand.scala
+  TuiCommand.scala
+  InfoCommand.scala
+  CliOptions.scala                   # shared option parsing/value mapping
+config/src/initkit/config/
+  Manifest.scala
+  ManifestSpec.scala
+  PlanEntry.scala
+  Sources.scala
+  Target.scala
+  Policy.scala
+  RawYaml.scala
+  ManifestLoader.scala
+  ManifestValidator.scala
+  ManifestLoadError.scala
+core/src/initkit/
+  platform/
+    HostFacts.scala                  # OS, distro, arch, command availability
+    HostDetector.scala
+    ConditionEvaluator.scala
+  resolve/
+    VariableResolver.scala
+    ResolvedManifest.scala
+  engine/
+    ExecutionEngine.scala
+    PlanSelection.scala
+    PlanEvent.scala
+    PlanResult.scala
+    ExecutionPolicy.scala
+  state/
+    ExecutionState.scala
+    StateStore.scala
+    StateFingerprint.scala
+  logging/
+    InitkitLogger.scala
+    DebugLogger.scala
+    LogEvent.scala
+command/src/initkit/command/
+  CommandSpec.scala
+  CommandRunner.scala
+  ProcessCommandRunner.scala
+  SudoStrategy.scala
+  Redactor.scala
+download/src/initkit/download/
+  DownloadClient.scala               # sttp wrapper
+  BinaryInstaller.scala
+  ArchiveExtractor.scala
+  Checksum.scala
+installers/src/initkit/installers/
+  Installer.scala                    # common executor interface
+  PackageManagerInstallers.scala
+  AptInstaller.scala
+  PacmanInstaller.scala
+  DnfInstaller.scala
+  ZypperInstaller.scala
+  FlatpakInstaller.scala
+  SnapInstaller.scala
+  ShellScriptInstaller.scala
+  NerdFontInstaller.scala
+  DotfilesInstaller.scala
+  InterruptInstaller.scala
+  CommandsInstaller.scala
+tui/src/initkit/tui/
+  TuiApp.scala
+  TuiModel.scala
+  TuiUpdate.scala
+  TuiView.scala
+  PlanChecklist.scala
+  Theme.scala
+```
+
+Mirror this structure in module-local tests:
+
+```text
+common/test/src/initkit/common/
+config/test/src/initkit/config/
+core/test/src/initkit/{platform,resolve,engine,state,logging}/
+command/test/src/initkit/command/
+download/test/src/initkit/download/
+installers/test/src/initkit/installers/
+cli/test/src/initkit/cli/
+tui/test/src/initkit/tui/
+app/test/src/initkit/
+```
+
+Guidelines:
+
+- keep `app` as the final assembly/runtime module; it should contain only the app entrypoint and wiring
+- keep reusable code in a dedicated module when it has multiple consumers; do not bury reusable utilities in `app`
+- keep `Main.scala` small; it should only delegate to the picocli root command
+- keep CLI classes thin; they translate flags into service calls and exit codes
+- keep TUI classes free of installer logic; TUI calls the same engine as CLI
+- keep `common` small and boring; if it grows domain-specific behavior, move that behavior to the owning module
+- keep `config` focused on loading, raw YAML, schema, and validation
+- put host detection, state, logging, engine, and variable interpolation in `core`
+- put process execution, sudo, and redaction in `command`
+- put HTTP and archive work in `download`
+- put plan-kind-specific behavior in `installers`
+- keep module dependencies explicit through `moduleDeps` in YAML
+- avoid dependency cycles; the intended module graph is:
+  `app -> cli/tui -> installers -> command/download/core -> config -> common`
+- keep build-only targets such as `buildtools` and `dist` outside runtime module dependencies
+- if a module needs custom task logic unsupported by YAML, isolate that one module in programmable Mill and leave the rest declarative
+- avoid one giant `util` package; create narrow utilities beside the domain that uses them
+
+## Scala Coding Standards
+
+Follow the official Scala style guide unless this plan says otherwise.
+
+Naming:
+
+- packages: lowercase ASCII, no underscores
+- classes, traits, objects, enums, and type aliases: `UpperCamelCase`
+- methods, vals, vars, parameters, and fields: `lowerCamelCase`
+- acronyms are normal words: `httpClient`, `maxId`, `YamlLoader`, not `HTTPClient`, `maxID`, `YAMLLoader`
+- constants: prefer descriptive `UpperCamelCase` vals inside companions, for example `DefaultStatePath`
+- test names: readable sentence-style strings in uTest
+
+Formatting:
+
+- use Scala 3 significant indentation consistently
+- avoid mixing braces and significant indentation in the same file unless Java interop or generated-style code makes braces clearer
+- keep constructors on one line when short; split each argument onto its own line when long
+- keep line length around 100-120 characters
+- add `.scalafmt.conf` before the codebase grows; use Scala 3 dialect and make formatting a normal validation step
+- group imports as Java/JDK, Scala, third-party, then local packages
+- avoid wildcard imports except for test DSLs such as `utest.*` and established local DSL-style imports
+
+Types and domain modeling:
+
+- prefer immutable `final case class` data models with `Vector`, `Map`, or `VectorMap`
+- use `enum` or sealed traits for closed ADTs such as plan kinds, execution modes, statuses, and checksum algorithms
+- use opaque types for safety around stringly identifiers when useful, for example `PlanEntryName`, `StateFingerprint`, or `ChecksumValue`
+- avoid `null`; model absence with `Option`
+- avoid exceptions for expected validation and execution errors; use typed `Either` or domain error ADTs
+- keep throwing exceptions for truly unexpected programmer errors or boundary failures that are immediately converted to typed errors
+- prefer total functions; when parsing untrusted config, do not use unsafe `.get`
+- keep side effects at the edge: CLI, TUI, file IO, process execution, HTTP, and state store
+
+Scala 3 language use:
+
+- use `given`/`using` only for true contextual dependencies or typeclass-style behavior, not hidden service locators
+- use extension methods sparingly; keep them in companions or clearly named syntax files
+- prefer ordinary methods over symbolic operators for this codebase
+- prefer pattern matching on ADTs over string matching after validation
+- use `export` only when it materially improves a public facade
+- avoid implicit conversions
+
+Concurrency and resource safety:
+
+- use Ox for structured concurrency and cancellation boundaries
+- do not create raw global thread pools from feature code
+- make every resource owner explicit: HTTP backends, temp directories, process handles, and log files
+- close files, streams, and HTTP resources deterministically
+- keep long-running process and download work outside the TUI render/update loop
+
+Error handling and logging:
+
+- define small error ADTs per boundary, then convert to user-facing messages at CLI/TUI edges
+- include plan entry name and item name in all execution errors
+- redact secrets before logging
+- debug logs may include internal details; normal stdout should remain concise and user-oriented
+
+Testing standards:
+
+- mirror source packages in test packages
+- test pure logic before process or network edges
+- use fake command runners, fake sudo strategies, fake clocks, and temp directories
+- do not run real package managers, `sudo`, shell installers, or live network downloads in tests
+- keep fixtures small and local; prefer generated temp files for archive/checksum tests
+- every new package boundary should have at least one focused test suite before it becomes depended on widely
+
 ## Supported Plan Kinds
 
 Implement these kinds first because they are represented in the example config:
@@ -277,6 +695,10 @@ Shared flags:
 - `--config <path>`: YAML manifest path, default `config.yaml`
 - `--state <path>`: read and write execution state in a separate JSON file
 - `--reset-state`: ignore and overwrite any existing state file
+- `--debug`: keep normal stdout output and also emit verbose diagnostic logs
+- `--debug-log <path>`: optional file path for debug logs; when omitted, debug logs go to stderr
+- `--color <auto|always|never>`: control ANSI color in plain CLI output; default `auto`
+- `--no-color`: alias for `--color never`
 
 Plain CLI flags:
 
@@ -297,7 +719,7 @@ tags.
 
 Acceptance criteria:
 
-- `mainargs` is removed from `build.mill`
+- `mainargs` is removed from the build metadata
 - picocli powers `info`, `tui`, and `apply`
 - `--help` and `--version` work through picocli standard help options
 - `apply` and `tui` both load the same manifest parser, validator, variable resolver, condition evaluator, state loader, and execution engine
@@ -308,7 +730,7 @@ Acceptance criteria:
 
 ## Phase 2: Manifest Model And Validation
 
-Create typed models under `app/src/main/scala/initkit/config`.
+Create typed models under `config/src/initkit/config`.
 
 Suggested model groups:
 
@@ -512,6 +934,12 @@ Acceptance criteria:
 
 Create a command runner abstraction.
 
+Use proper JVM process execution. Prefer a small wrapper around
+`java.lang.ProcessBuilder` over ad-hoc shell strings. `os-lib` can be used for
+filesystem helpers, but command execution should preserve argv boundaries,
+working directory, environment, stream handling, exit codes, cancellation, and
+timeouts explicitly.
+
 Responsibilities:
 
 - render commands as arrays where possible
@@ -520,6 +948,49 @@ Responsibilities:
 - capture exit code
 - support dry-run without spawning the command
 - provide clear logs with plan entry name and item name
+- support working directory and environment overrides
+- support command timeouts and cancellation through Ox
+- expose structured execution events for both CLI output and TUI log panels
+- redact sensitive values before printing commands or debug logs
+
+Suggested model:
+
+```scala
+final case class CommandSpec(
+    argv: Vector[String],
+    cwd: Option[os.Path] = None,
+    env: Map[String, String] = Map.empty,
+    sudo: Boolean = false,
+    shell: Boolean = false,
+    timeout: Option[FiniteDuration] = None,
+    sensitiveEnv: Set[String] = Set.empty,
+    sensitiveArgs: Set[Int] = Set.empty
+)
+```
+
+Execution rules:
+
+- default to argv execution with `ProcessBuilder(argv*)`
+- use shell execution only for `commands.run` and explicit shell-script items
+- when `shell = true`, execute through `/bin/sh -lc` unless the spec provides a shell
+- inherit stdin only when an interactive prompt is expected
+- stream stdout and stderr concurrently so commands cannot deadlock on full buffers
+- preserve stdout/stderr ordering where practical, but do not block execution to perfectly merge streams
+- return a typed result containing exit code, duration, stdout/stderr tail, and failure reason
+- terminate the process tree on cancellation or timeout where the JVM/platform allows it
+- never pass user-provided command text through a shell unless the manifest kind explicitly requires it
+
+Privilege and password prompting:
+
+- do not collect, echo, log, store, or cache passwords inside initkit
+- for sudo commands in interactive CLI mode, run a `sudo -v` preflight with inherited stdin/stderr before the first sudo command
+- if sudo credentials are already cached, continue without prompting
+- if no interactive terminal is available, fail with a clear message unless `SUDO_ASKPASS` is configured
+- when `SUDO_ASKPASS` is present and the session is noninteractive, use `sudo -A` for the preflight
+- for TUI live execution, temporarily suspend or tear down the alternate-screen UI before any sudo password prompt, run `sudo -v`, then restore the UI
+- do not run package-manager commands that may prompt for confirmation unless the executor passes noninteractive flags such as `-y`
+- respect `--yes` only for initkit confirmations; it must not answer arbitrary subprocess password prompts
+- tests must use a fake sudo strategy and must never invoke real sudo
 
 Rules:
 
@@ -527,11 +998,16 @@ Rules:
 - for `commands.run`, use shell because it is intentionally user-provided command text
 - never prompt for sudo in tests
 - detect missing required commands before executing a plan entry when practical
+- debug logs may show argv, cwd, env keys, duration, exit code, and stream tails, but must redact configured sensitive values
 
 Acceptance criteria:
 
 - command runner has unit tests with a fake backend
 - dry-run output includes the exact command that would run
+- commands with large stdout/stderr do not deadlock
+- timeout and cancellation terminate child processes
+- sudo preflight is exercised through a fake strategy in tests
+- TUI mode can request sudo without corrupting the terminal UI
 
 ## Phase 8: TUI Mode
 
@@ -828,10 +1304,40 @@ than only plain stdout.
 Keep plain CLI output useful in CI and terminals. Use color conservatively in
 plain CLI mode only if it does not make logs harder to parse.
 
+Plain CLI styling:
+
+- use fansi to render ANSI-styled labels, badges, statuses, section titles, and summaries
+- default `--color auto` should enable color only for interactive terminals that appear to support ANSI
+- disable color when `--color never`, `--no-color`, `NO_COLOR` is set, or stdout is not a terminal
+- force color only when `--color always`
+- never write raw escape codes by hand; centralize all color decisions behind a small CLI renderer
+- keep the unstyled text readable and complete; color must add scanability, not carry the only meaning
+- use compact status badges inspired by the reference style, for example gray package-manager names, cyan running entries, green completed entries, yellow skipped/interrupted entries, and red failed entries
+- keep stdout parseable in CI by avoiding full-screen redraws, cursor movement, or animated output in plain CLI mode
+- do not use fansi for TUI rendering; TamboUI owns full-screen terminal styling
+
+Debug logging:
+
+- default mode writes concise user-facing progress to stdout
+- `--debug` keeps the default stdout output and additionally emits verbose diagnostics
+- when `--debug-log <path>` is set, write verbose diagnostics to that file
+- when `--debug` is set without `--debug-log`, write verbose diagnostics to stderr
+- create debug log parent directories when needed
+- include timestamps, run id, manifest name, plan entry, item name, command argv, cwd, duration, exit code, and state-file decisions
+- include HTTP download request method, URL, status, content length when known, target path, checksum result, and retry attempts
+- include Ox task lifecycle events for parallel entries: scheduled, started, completed, failed, cancelled
+- redact secrets and password-like values from argv, environment, URLs, headers, and command output tails
+- avoid logging full stdout/stderr by default; keep bounded tails unless a later explicit flag asks for full traces
+- TUI mode should expose recent debug lines in the log panel when debug is enabled, while still writing the full debug log to stderr or file
+
 Acceptance criteria:
 
 - a user can understand what happened without opening debug logs
 - failures include plan entry and item name
+- `--debug` adds diagnostics without removing or replacing normal stdout output
+- debug logs are redacted and include process execution details
+- `--color never`, `--no-color`, and non-TTY stdout produce no ANSI escape sequences
+- `--color always` produces fansi-styled output in plain CLI mode
 
 ## Phase 17: Tests
 
@@ -846,9 +1352,12 @@ Required test areas:
 - command generation
 - execution ordering
 - Ox-backed bounded parallel execution
+- JVM process execution with stdout/stderr pumping, timeouts, cancellation, and exit code capture
+- sudo preflight behavior through fake interactive and noninteractive strategies
 - TUI view-model generation from a manifest
 - TUI selection rules for matched, skipped, completed, and interrupted entries
 - dry-run behavior
+- fansi CLI rendering, including `auto`, `always`, `never`, `NO_COLOR`, and non-TTY behavior
 - state file writing and resume behavior
 - binary archive extraction with fixtures
 - sttp download handling through fake or local HTTP fixtures
@@ -925,34 +1434,46 @@ engine used by plain CLI mode.
 
 ## Agent Loop Tasks
 
-- T001 Refresh build dependencies
-- T002 Replace command parsing
-- T003 Model and parse manifests
-- T004 Validate manifest semantics
-- T005 Run parser checkpoint
-- T006 Resolve manifest variables
-- T007 Detect host conditions
-- T008 Select preview entries
-- T009 Persist execution state
-- T010 Abstract command execution
-- T011 Run execution engine
-- T012 Run engine checkpoint
-- T013 Generate source setup
-- T014 Implement package managers
-- T015 Implement generic commands
-- T016 Run package checkpoint
-- T017 Implement shell scripts
-- T018 Download binaries safely
-- T019 Extract binary archives
-- T020 Run download checkpoint
-- T021 Implement font installer
-- T022 Implement dotfiles apply
-- T023 Report CLI outcomes
-- T024 Run CLI milestone
-- T025 Research TamboUI APIs
-- T026 Build TUI view model
-- T027 Render TUI checklist
-- T028 Wire TUI execution
-- T029 Run TUI checkpoint
-- T030 Document initkit usage
-- T031 Run final validation
+The strict queue for subsequent implementation and validation iterations is in
+`.agent-loop/tasks.json`. All tasks are pending at the time of this analysis
+iteration. The current workspace still has a single starter `app` module, so the
+queue begins with build/source-layout and module-boundary cleanup before the
+manifest pipeline.
+
+- T001 Migrate starter build layout (chore, complex)
+- T002 Split CLI and TUI shells (improvement, complex)
+- T003 Load raw manifests (feature, complex)
+- T004 Validate manifest semantics (feature, complex)
+- T005 Decode package and source specs (feature, complex)
+- T006 Decode installer specs (feature, complex)
+- T007 Run manifest checkpoint (validation, simple)
+- T008 Detect host facts (feature, moderate)
+- T009 Evaluate plan conditions (feature, moderate)
+- T010 Resolve manifest variables (feature, complex)
+- T011 Select runnable entries (feature, moderate)
+- T012 Run resolution checkpoint (validation, simple)
+- T013 Persist execution state (feature, complex)
+- T014 Define execution contracts (feature, moderate)
+- T015 Implement engine skeleton (feature, complex)
+- T016 Run engine checkpoint (validation, simple)
+- T017 Build command contracts (feature, moderate)
+- T018 Run JVM processes safely (feature, complex)
+- T019 Generate source setup operations (feature, moderate)
+- T020 Implement package executors (feature, complex)
+- T021 Implement commands executor (feature, moderate)
+- T022 Run command checkpoint (validation, simple)
+- T023 Install shell scripts (feature, moderate)
+- T024 Download binaries with checksums (feature, complex)
+- T025 Extract binary archives (feature, complex)
+- T026 Run download checkpoint (validation, simple)
+- T027 Install Nerd Fonts (feature, moderate)
+- T028 Apply dotfiles (feature, moderate)
+- T029 Report CLI outcomes (improvement, complex)
+- T030 Run CLI milestone (validation, simple)
+- T031 Research TamboUI APIs (chore, moderate)
+- T032 Build TUI view model (feature, complex)
+- T033 Render TUI checklist (feature, complex)
+- T034 Wire TUI execution (feature, complex)
+- T035 Run TUI checkpoint (validation, simple)
+- T036 Document initkit usage (chore, moderate)
+- T037 Run final validation (validation, simple)
