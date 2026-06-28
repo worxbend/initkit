@@ -28,6 +28,18 @@ spec:
     stateFile: "${HOME}/.local/state/initkit/tumbleweed-dev.state.json"
 
   sources:
+    zypper:
+      keyImports:
+        - name: packman
+          url: https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Tumbleweed/repodata/repomd.xml.key
+      repositories:
+        - name: packman
+          url: https://ftp.gwdg.de/pub/linux/misc/packman/suse/openSUSE_Tumbleweed/
+          autoRefresh: true
+      commands:
+        - name: refresh packman metadata
+          run: "zypper --non-interactive refresh packman"
+          sudo: true
     flatpak:
       remotes:
         - name: flathub
@@ -48,6 +60,9 @@ spec:
             oneOf: [opensuse, opensuse-tumbleweed, opensuse-leap, sles]
       spec:
         refresh: true
+        actions:
+          - action: dup-from
+            args: [packman, --allow-vendor-change]
         install:
           - patterns-devel-base-devel_basis
           - ca-certificates
@@ -74,6 +89,16 @@ spec:
           - docker
           - docker-compose
 
+    - name: sdkman-runtimes
+      kind: sdkman-packages
+      description: JVM tooling managed through SDKMAN.
+      spec:
+        install:
+          - candidate: java
+            version: 21.0.4-tem
+          - gradle
+          - maven
+
     - name: tumbleweed-flatpaks
       kind: flatpak-packages
       description: Desktop apps through Flathub.
@@ -93,5 +118,27 @@ spec:
       spec:
         items:
           - name: ensure-local-bin
-            run: "mkdir -p ${binDir}"
+            run: "mkdir -p ${binDir} ${HOME}/.cache/initkit && touch ${HOME}/.cache/initkit/opensuse-local-bin.created"
             sudo: false
+            creates: "${HOME}/.cache/initkit/opensuse-local-bin.created"
+            unless: "test -d ${binDir}"
+
+    - name: tumbleweed-sddm-wayland
+      kind: file-writes
+      description: Example root-owned SDDM Wayland configuration.
+      spec:
+        items:
+          - name: sddm-wayland
+            path: /etc/sddm.conf.d/wayland.conf
+            content: |
+              [General]
+              DisplayServer=wayland
+            sudo: true
+            owner: root
+            group: root
+            mode: "0644"
+            when:
+              os:
+                family: linux
+                distribution:
+                  oneOf: [opensuse, opensuse-tumbleweed, opensuse-leap, sles]

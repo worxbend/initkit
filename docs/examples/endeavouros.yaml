@@ -41,6 +41,8 @@ spec:
             oneOf: [arch, endeavouros]
       spec:
         sync: true
+        actions:
+          - sync-upgrade
         install:
           - base-devel
           - ca-certificates
@@ -68,6 +70,23 @@ spec:
           - docker-buildx
           - docker-compose
 
+    - name: aur-desktop-tools
+      kind: aur-packages
+      description: AUR packages installed one at a time through yay.
+      execution:
+        mode: sequential
+        locks: [aur-helper]
+      when:
+        os:
+          family: linux
+          distribution:
+            oneOf: [arch, endeavouros]
+      spec:
+        helper: yay
+        install:
+          - visual-studio-code-bin
+          - google-chrome
+
     - name: user-tools
       kind: pacman-packages
       description: Nice-to-have user tools.
@@ -91,5 +110,7 @@ spec:
       spec:
         items:
           - name: ensure-local-bin
-            run: "mkdir -p ${binDir}"
+            run: "mkdir -p ${binDir} ${HOME}/.cache/initkit && touch ${HOME}/.cache/initkit/arch-local-bin.created"
             sudo: false
+            creates: "${HOME}/.cache/initkit/arch-local-bin.created"
+            unless: "test -d ${binDir}"

@@ -29,11 +29,21 @@ spec:
 
   sources:
     dnf:
+      keyImports:
+        - name: rpmfusion-free
+          url: https://rpmfusion.org/keys?action=AttachFile&do=get&target=RPM-GPG-KEY-rpmfusion-free-fedora-2020
+      releasePackages:
+        - name: rpmfusion-free
+          url: https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-%fedora.noarch.rpm
       repositories:
         - name: vscode
           description: Visual Studio Code
           baseUrl: https://packages.microsoft.com/yumrepos/vscode
           gpgKey: https://packages.microsoft.com/keys/microsoft.asc
+      commands:
+        - name: enable crb-compatible repos
+          run: "dnf config-manager --set-enabled crb || true"
+          sudo: true
     flatpak:
       remotes:
         - name: flathub
@@ -53,6 +63,10 @@ spec:
           distribution:
             oneOf: [fedora, rhel, centos]
       spec:
+        actions:
+          - check-update
+          - action: groupupdate
+            args: ["core"]
         install:
           - "@development-tools"
           - ca-certificates
@@ -81,6 +95,15 @@ spec:
           - skopeo
           - docker-compose
 
+    - name: cargo-cli-tools
+      kind: cargo-packages
+      description: Rust-based command line tools installed through cargo-binstall.
+      spec:
+        installer: cargo-binstall
+        install:
+          - ripgrep
+          - fd-find
+
     - name: fedora-flatpaks
       kind: flatpak-packages
       description: Desktop apps through Flathub.
@@ -100,5 +123,7 @@ spec:
       spec:
         items:
           - name: ensure-local-bin
-            run: "mkdir -p ${binDir}"
+            run: "mkdir -p ${binDir} ${HOME}/.cache/initkit && touch ${HOME}/.cache/initkit/fedora-local-bin.created"
             sudo: false
+            creates: "${HOME}/.cache/initkit/fedora-local-bin.created"
+            unless: "test -d ${binDir}"

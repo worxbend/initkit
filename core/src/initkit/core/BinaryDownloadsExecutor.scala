@@ -729,6 +729,18 @@ object BinaryDownloadsExecutor:
         Some(item.mode),
         s"install binary download '${item.name}'"
       )
+    ) ++ item.symlinks.map(symlinkDryRunAction(item, _))
+
+  private def symlinkDryRunAction(
+      item: BinaryDownloadItem,
+      symlink: BinarySymlink
+  ): DryRunAction =
+    val target = symlink.target.getOrElse(item.destination)
+    DryRunAction.Command(
+      argv = Vector("ln", "-sfn", target, symlink.path),
+      shell = None,
+      sudo = symlink.sudo.contains(true),
+      workingDirectory = None
     )
 
   private def checksumName(algorithm: ChecksumAlgorithm): String = algorithm match

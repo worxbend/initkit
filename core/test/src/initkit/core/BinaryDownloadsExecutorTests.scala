@@ -102,9 +102,11 @@ object BinaryDownloadsExecutorTests extends TestSuite:
     test("dry-run previews direct downloads without calling HTTP"):
       withTempDir: tempDir =>
         val destination = tempDir.resolve("tool")
+        val link        = tempDir.resolve("bin").resolve("tool")
         val item        = binaryItem(destination, "payload".getBytes(StandardCharsets.UTF_8))
-        val httpClient  = RecordingBinaryDownloadHttpClient(Vector.empty)
-        val installer   = new PackageManagerInstallers(
+          .copy(symlinks = Vector(BinarySymlink(link.toString, None, Some(true))))
+        val httpClient = RecordingBinaryDownloadHttpClient(Vector.empty)
+        val installer  = new PackageManagerInstallers(
           FakeCommandExecutor(Vector.empty),
           binaryDownloadHttpClient = httpClient
         )
@@ -125,6 +127,12 @@ object BinaryDownloadsExecutorTests extends TestSuite:
             destination.toString,
             Some("0755"),
             "install binary download 'tool'"
+          ),
+          DryRunAction.Command(
+            Vector("ln", "-sfn", destination.toString, link.toString),
+            shell = None,
+            sudo = true,
+            workingDirectory = None
           )
         ))
 

@@ -2614,3 +2614,23 @@ assertion, JSON checks for loop metadata, `git diff --check`, and the
 conflict-marker scan. Remaining risk is unchanged: full-screen manual TUI
 interaction is covered by terminal-free TUI tests and noninteractive smokes,
 not by a human-driven terminal session in this loop.
+
+Progress note T005 / iteration 66, 2026-06-29: expanded the public distro
+examples to demonstrate currently implemented legacy-parity features without
+adding manifest kinds or unsupported fields. Ubuntu now shows apt source setup,
+apt actions, binary archive install with a user symlink, guarded commands, and
+`file-writes`. Fedora now shows richer DNF source setup, DNF actions,
+`cargo-packages`, Flatpak, and guarded commands. EndeavourOS/Arch now shows
+pacman sync/upgrade actions and `aur-packages`. openSUSE Tumbleweed now shows
+Packman zypper setup, a zypper dup-from action, `sdkman-packages`, and an SDDM
+`file-writes` example. Dry-run previews were tightened so binary symlinks emit
+an explicit `ln -sfn` command and command items show guard notes for `creates`,
+`unless`, non-default `allowedExitCodes`, and `confirm`. `docs/examples.md`
+and `docs/config-structure.md` were updated to match the supported kind names
+and preview behavior. Checks passed:
+`./mill config.test`, final `./mill core.test`, `./mill cli.test`,
+`./mill __.compile`, `./mill __.test`, final
+`./mill mill.scalalib.scalafmt/checkFormatAll`, dry-run apply for all four
+`docs/examples/*.yaml` profiles with throwaway `/tmp/initkit-doc-*-state.json`
+paths, the no-state-file assertion, `git diff --check`, and `jq empty
+.agent-loop/tasks.json`.

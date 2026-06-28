@@ -409,8 +409,12 @@ archive:
   path: linux-amd64/helm
 symlinks:
   - path: /usr/local/bin/helm
+    target: "${binDir}/helm-v3.15.2"
     sudo: true
 ```
+
+Dry-run output shows the download/install preview and any generated symlink
+command.
 
 ### `shell-scripts`
 
@@ -536,6 +540,7 @@ spec:
       creates: /tmp/docker-enabled
       unless: systemctl is-enabled docker
       allowedExitCodes: [0, 3]
+      confirm: Enable Docker at boot?
       timeout: 30
       when:
         commandExists: systemctl
@@ -543,6 +548,8 @@ spec:
 
 Use `commands` for small host operations such as user group changes, login shell
 changes, system service commands, simple Git clones, Git config, and time setup.
+Dry-run output includes guard notes for `creates`, `unless`, non-default
+`allowedExitCodes`, and `confirm`.
 
 ## State Files
 

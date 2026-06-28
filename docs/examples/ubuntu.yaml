@@ -56,6 +56,8 @@ spec:
             oneOf: [ubuntu, debian]
       spec:
         update: true
+        actions:
+          - upgrade
         install:
           - build-essential
           - ca-certificates
@@ -85,6 +87,25 @@ spec:
           - docker-buildx-plugin
           - docker-compose-plugin
 
+    - name: direct-binaries
+      kind: binary-downloads
+      description: Install a direct binary archive and expose a stable user symlink.
+      execution:
+        mode: parallel
+        maxConcurrency: 2
+      spec:
+        items:
+          - name: delta
+            url: https://github.com/dandavison/delta/releases/download/0.18.2/delta-0.18.2-x86_64-unknown-linux-gnu.tar.gz
+            destination: "${binDir}/delta-0.18.2"
+            mode: "0755"
+            archive:
+              type: tar.gz
+              path: delta-0.18.2-x86_64-unknown-linux-gnu/delta
+            symlinks:
+              - path: "${binDir}/delta"
+                target: "${binDir}/delta-0.18.2"
+
     - name: flathub-apps
       kind: flatpak-packages
       description: A couple of desktop apps through Flathub.
@@ -104,5 +125,26 @@ spec:
       spec:
         items:
           - name: ensure-local-bin
-            run: "mkdir -p ${binDir}"
+            run: "mkdir -p ${binDir} ${HOME}/.cache/initkit && touch ${HOME}/.cache/initkit/ubuntu-local-bin.created"
             sudo: false
+            creates: "${HOME}/.cache/initkit/ubuntu-local-bin.created"
+            unless: "test -d ${binDir}"
+          - name: add-user-to-docker
+            run: "usermod -aG docker ${user}"
+            sudo: true
+            unless: "id -nG ${user} | grep -qw docker"
+            allowedExitCodes: [0, 6]
+            confirm: "Add ${user} to the docker group; log out and back in afterward."
+
+    - name: ubuntu-user-config
+      kind: file-writes
+      description: Write a small user-scoped marker config.
+      spec:
+        items:
+          - name: initkit-tools-note
+            path: "${HOME}/.config/initkit/ubuntu-tools.conf"
+            content: |
+              profile=ubuntu-dev
+              package_manager=apt
+            sudo: false
+            mode: "0644"

@@ -36,10 +36,23 @@ initkit apply \
 
 | Distro | Profile | Package manager | Notes |
 | --- | --- | --- | --- |
-| Ubuntu | [ubuntu.yaml](examples/ubuntu.yaml) | apt | Includes Docker apt source setup |
-| Fedora | [fedora.yaml](examples/fedora.yaml) | dnf | Uses `@development-tools` |
-| EndeavourOS / Arch | [endeavouros.yaml](examples/endeavouros.yaml) | pacman | Matches `arch` or `endeavouros` |
-| openSUSE Tumbleweed | [opensuse-tumbleweed.yaml](examples/opensuse-tumbleweed.yaml) | zypper | Matches common openSUSE IDs |
+| Ubuntu | [ubuntu.yaml](examples/ubuntu.yaml) | apt | Docker apt source setup, apt actions, direct binary symlink, guarded commands, file write |
+| Fedora | [fedora.yaml](examples/fedora.yaml) | dnf | DNF repo/key/release setup, DNF actions, cargo packages |
+| EndeavourOS / Arch | [endeavouros.yaml](examples/endeavouros.yaml) | pacman | Pacman sync/upgrade actions, AUR packages, guarded commands |
+| openSUSE Tumbleweed | [opensuse-tumbleweed.yaml](examples/opensuse-tumbleweed.yaml) | zypper | Packman source setup, zypper dup action, SDKMAN packages, SDDM file write |
+
+## Legacy-Parity Features In The Examples
+
+The examples use currently implemented manifest kinds only:
+
+- Package manager actions through `actions` on `apt-packages`, `dnf-packages`, `pacman-packages`, and `zypper-packages`.
+- Additional package ecosystems through `aur-packages`, `cargo-packages`, and `sdkman-packages`.
+- Repository and remote setup through `spec.sources.apt`, `dnf`, `zypper`, and `flatpak`.
+- File creation through `file-writes`.
+- Command guards through `creates`, `unless`, `allowedExitCodes`, and `confirm` on `commands` items.
+- Binary archive install plus symlink preview through `binary-downloads.items[].symlinks`.
+
+Use `--dry-run` to inspect the generated source setup, package commands, file writes, command guard notes, and symlink commands before applying a profile.
 
 ## Distro ID Notes
 

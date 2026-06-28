@@ -149,10 +149,23 @@ object CommandsExecutor:
 
   private def dryRunActions(step: CommandExecutionStep): Vector[DryRunAction] = step match
     case CommandExecutionStep.Run(item, command) =>
+      val guards = item.creates.toVector.map(path =>
+        DryRunAction.Message(s"guard command '${item.name}': creates path $path")
+      ) ++
+        item.unless.toVector.map(command =>
+          DryRunAction.Message(s"guard command '${item.name}': unless '$command' succeeds")
+        ) ++
+        Option
+          .when(item.allowedExitCodes != Vector(0))(
+            DryRunAction.Message(
+              s"guard command '${item.name}': allowed exit codes ${item.allowedExitCodes.mkString(",")}"
+            )
+          )
+          .toVector
       val confirmation = item.confirm.toVector.map(message =>
         DryRunAction.Message(s"confirm command '${item.name}': $message")
       )
-      confirmation :+ dryRunCommand(command)
+      guards ++ confirmation :+ dryRunCommand(command)
     case CommandExecutionStep.Skipped(item, reasons) =>
       Vector(DryRunAction.Message(s"skip command '${item.name}': ${reasons.mkString("; ")}"))
 

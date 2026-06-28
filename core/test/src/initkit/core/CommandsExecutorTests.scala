@@ -80,6 +80,50 @@ object CommandsExecutorTests extends TestSuite:
         dryRunShell("mkdir -p ${binDir}", sudo = false)
       ))
 
+    test("dry-run previews command guards and confirmations"):
+      val item = CommandItem(
+        name = "guarded-command",
+        run = "systemctl restart libvirtd",
+        sudo = Some(true),
+        when = None,
+        creates = Some("/tmp/initkit-libvirt.done"),
+        unless = Some("systemctl is-active libvirtd"),
+        allowedExitCodes = Vector(0, 3),
+        confirm = Some("Restart libvirt networking?")
+      )
+      val operation: InstallerPlanOperation[InstallerSpec.Commands] = InstallerPlanOperation(
+        PlanOperationSummary(0, "guarded", "commands", None),
+        PlanEntryExecutionPolicy(
+          PlanEntryExecutionMode.Sequential,
+          maxConcurrency = 1,
+          failFast = true,
+          locks = Vector.empty
+        ),
+        InstallerSpec.Commands(Vector(item))
+      )
+
+      val outcome = new PackageManagerInstallers(
+        FakeCommandExecutor(Vector.empty),
+        hostFacts = hostWithoutSystemctl
+      ).installCommands(operation, dryRunPolicy)
+      val dryRun = outcome match
+        case PlanOperationOutcome.DryRun(data) => data
+        case other                             => fail(s"expected dry-run outcome, got $other")
+
+      assert(dryRun.actions == Vector(
+        DryRunAction.Message(
+          "guard command 'guarded-command': creates path /tmp/initkit-libvirt.done"
+        ),
+        DryRunAction.Message(
+          "guard command 'guarded-command': unless 'systemctl is-active libvirtd' succeeds"
+        ),
+        DryRunAction.Message("guard command 'guarded-command': allowed exit codes 0,3"),
+        DryRunAction.Message(
+          "confirm command 'guarded-command': Restart libvirt networking?"
+        ),
+        dryRunShell("systemctl restart libvirtd", sudo = true)
+      ))
+
   private val hostWithSystemctl: HostFacts = HostFacts.fake(commands = Set("systemctl"))
 
   private val hostWithoutSystemctl: HostFacts = HostFacts.fake(commands = Set.empty)
