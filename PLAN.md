@@ -2530,3 +2530,17 @@ not create the throwaway state file. `jq empty .agent-loop/tasks.json`,
 conflict-marker scan passed. `native-image` is not on `PATH` in this local
 environment, so local native-image packaging was noted as unavailable rather
 than treated as a validation failure.
+
+Validation checkpoint VALIDATION-60 / iteration 60, 2026-06-29: the configured
+checkpoint validation was rerun without source changes. Project metadata still
+uses the checked-in `./mill` launcher with root `build.mill` and
+`.scalafmt.conf`; `.agent-loop/config.json` lists recursive compile,
+recursive test, and Mill scalafmt validation as the supported project-native
+checks. Mill discovery passed for `./mill --no-daemon resolve _`, listing
+`app`, `cli`, `config`, `core`, `host`, `selective`, and `tui`. Configured
+checks passed: `./mill __.compile`, `./mill __.test`, and
+`./mill mill.scalalib.scalafmt/checkFormatAll`. Additional integrity checks
+passed: `jq empty .agent-loop/tasks.json`, `jq empty .agent-loop/config.json`,
+`git diff --check`, and the conflict-marker scan. No in-scope regression or
+fix was found; residual risk remains limited to validation that is not covered
+by noninteractive tests, such as a human-driven full-screen TUI session.
