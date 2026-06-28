@@ -210,6 +210,13 @@ condition skips, completed placeholders, and order preservation. Checks passed:
 `./mill core.test`, `./mill __.compile`, `./mill __.test`, and
 `git diff --check`.
 
+Validation checkpoint T012, 2026-06-28: added a focused core regression test
+that loads `config.example.yaml`, resolves runtime and host variables, evaluates
+conditions against fake Ubuntu host facts, and selects runnable/skipped plan
+entries in manifest order. Recursive validation passed with `./mill __.compile`
+and `./mill __.test`; `git diff --check` and `jq empty .agent-loop/tasks.json`
+also pass.
+
 Validation checkpoint, 2026-06-28: `./mill app.compile` and `./mill app.test`
 were rerun for the completed T001-T003 chunk. Daemon-mode Mill cannot start its
 localhost server in this sandbox (`java.net.SocketException: Operation not
