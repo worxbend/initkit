@@ -61,6 +61,13 @@ object TuiViewModelTests extends TestSuite:
         )
       ))
 
+    test("state file view exposes resume metadata"):
+      val viewModel = buildViewModel()
+
+      assert(viewModel.stateFile.lastCompleted == Some("completed"))
+      assert(viewModel.stateFile.nextPlanEntry == Some("running"))
+      assert(viewModel.stateFile.completedEntries == 1)
+
     test("initial selection applies select and skip inputs only to runnable rows"):
       val viewModel = buildViewModel(
         selection = TuiSelectionInputs.fromOptions(

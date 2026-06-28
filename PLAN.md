@@ -1998,3 +1998,14 @@ No source fix was needed. Formatter validation remains unavailable because
 `.scalafmt.conf` exists but no local `scalafmt` executable or Mill formatting
 target is configured, and full-screen interactive TUI behavior remains covered
 by terminal-free tests rather than an end-to-end terminal session.
+
+Validation checkpoint T035 / VALIDATION-40, 2026-06-28: the TUI checkpoint was
+rerun against the current tree. A focused TUI view-model regression test now
+pins state-file resume metadata (`lastCompleted`, `nextPlanEntry`, and
+completed-entry count) so the matched/skipped/completed/interrupted/selection/
+resume acceptance is explicit in terminal-free tests. Required checks passed:
+`./mill __.compile`, `./mill __.test`, and `./mill app.run tui --help`.
+Focused `./mill tui.test`, `git diff --check`, and `jq empty
+.agent-loop/tasks.json` also pass. `tui --help` prints picocli usage and exits
+without opening the full-screen UI. Formatter validation remains unavailable
+because no local `scalafmt` executable or Mill formatter target is configured.
