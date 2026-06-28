@@ -8,15 +8,7 @@ object ManifestValidator:
   private val SupportedKind = "WorkstationProfile"
   private val DefaultExecutionMode = "sequential"
   private val SupportedExecutionModes = Set("sequential", "parallel")
-  private val PackageKinds = Set(
-    "apt-packages",
-    "pacman-packages",
-    "dnf-packages",
-    "zypper-packages",
-    "flatpak-packages",
-    "snap-packages"
-  )
-  private val SupportedPlanKinds = PackageKinds ++ Set(
+  private val SupportedPlanKinds = PackageSpecDecoder.PackageKinds ++ Set(
     "binary-downloads",
     "shell-scripts",
     "nerd-fonts",
@@ -75,21 +67,12 @@ object ManifestValidator:
       case None => Vector(error(specAt, "is required"))
       case Some(RawYaml.MappingValue(fields)) =>
         kind match
-          case packageKind if PackageKinds.contains(packageKind) => validatePackageInstallList(fields, specAt)
+          case packageKind if PackageSpecDecoder.isPackageKind(packageKind) =>
+            PackageSpecDecoder.decode(packageKind, entry.spec, specAt, entry.name).left.toOption.getOrElse(Vector.empty)
           case "binary-downloads"                               => validateBinaryDownloadSpec(fields, specAt)
           case "interrupt"                                      => validateInterruptSpec(fields, specAt, manifestPath)
           case _                                                => Vector.empty
       case Some(other) => Vector(error(specAt, s"must be a mapping, found ${kindOf(other)}"))
-
-  private def validatePackageInstallList(
-      fields: VectorMap[String, RawYaml],
-      specAt: String
-  ): Vector[ManifestValidationError] =
-    fields.get("install") match
-      case Some(RawYaml.SequenceValue(items)) if items.nonEmpty => Vector.empty
-      case Some(RawYaml.SequenceValue(_)) => Vector(error(s"$specAt.install", "must contain at least one package"))
-      case Some(other) => Vector(error(s"$specAt.install", s"must be a non-empty sequence, found ${kindOf(other)}"))
-      case None => Vector(error(s"$specAt.install", "is required and must contain at least one package"))
 
   private def validateBinaryDownloadSpec(
       fields: VectorMap[String, RawYaml],

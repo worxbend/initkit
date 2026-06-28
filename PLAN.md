@@ -127,6 +127,16 @@ state-file reuse of the manifest path. Focused validator tests cover both
 single-rule failures and multi-error aggregation. `./mill __.compile` and
 `./mill __.test` pass.
 
+Progress note, 2026-06-28: T005 added typed package and source specs in the
+`config` module. `spec.sources.apt`, `dnf`, `zypper`, and `flatpak` now decode
+into typed repository/remote models while preserving raw source YAML. Package
+plan entries for apt, pacman, dnf, zypper, flatpak, and snap now decode through
+`PackageSpecDecoder`, and manifest validation uses that decoder so empty
+`install` lists report the related plan entry name. Focused tests cover one
+valid and one invalid package entry for every package manager kind, and source
+typing is covered against `config.example.yaml`. `./mill __.compile`,
+`./mill __.test`, and `git diff --check` pass.
+
 Validation checkpoint, 2026-06-28: `./mill app.compile` and `./mill app.test`
 were rerun for the completed T001-T003 chunk. Daemon-mode Mill cannot start its
 localhost server in this sandbox (`java.net.SocketException: Operation not

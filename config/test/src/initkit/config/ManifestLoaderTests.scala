@@ -19,6 +19,17 @@ object ManifestLoaderTests extends TestSuite:
       assert(manifest.spec.sources.flatMap(_.apt).nonEmpty)
       assert(manifest.spec.plan.size == 16)
 
+    test("loads package manager sources into typed values"):
+      val sources = loadExample().spec.sources.get
+
+      assert(sources.apt.exists(_.repositories.head.name == "docker"))
+      assert(sources.apt.exists(_.repositories.head.source.contains("download.docker.com")))
+      assert(sources.apt.flatMap(_.updateBeforeInstall).contains(true))
+      assert(sources.dnf.exists(_.repositories.head.baseUrl.contains("packages.microsoft.com")))
+      assert(sources.zypper.exists(_.repositories.head.autoRefresh.contains(true)))
+      assert(sources.flatpak.exists(_.remotes.head.name == "flathub"))
+      assert(sources.flatpak.exists(_.remotes.head.ifMissing.contains(true)))
+
     test("preserves kind specific plan spec as raw yaml"):
       val manifest = loadExample()
       val entry = manifest.spec.plan.find(_.name.contains("direct-binaries")).get

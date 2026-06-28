@@ -130,7 +130,9 @@ object ManifestValidatorTests extends TestSuite:
         """
       )
 
-      assert(errors.exists(_.message == "spec.plan[0].spec.install: must contain at least one package"))
+      assert(
+        errors.exists(_.message == "spec.plan[0].spec.install: plan entry 'base' must contain at least one package")
+      )
 
     test("rejects unsupported checksum algorithms"):
       val errors = validateYaml(
@@ -206,7 +208,11 @@ object ManifestValidatorTests extends TestSuite:
       assert(errors.exists(_.message.contains("kind: unsupported kind 'Wrong'")))
       assert(errors.exists(_.message.contains("spec.plan[0].kind: unsupported plan kind 'unknown-kind'")))
       assert(errors.exists(_.message.contains("spec.plan[1].name: duplicate plan name 'duplicate'")))
-      assert(errors.exists(_.message.contains("spec.plan[1].spec.install: must contain at least one package")))
+      assert(
+        errors.exists(
+          _.message.contains("spec.plan[1].spec.install: plan entry 'duplicate' must contain at least one package")
+        )
+      )
 
   private def validateYaml(source: String): Vector[ManifestValidationError] =
     loadValidatedYaml(source).left.toOption.get

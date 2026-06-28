@@ -86,9 +86,9 @@ object ManifestLoader:
         case Some(value) => decodePolicy(value).map(Some(_))
         case None        => Right(None)
       vars <- optionalStringMap(fields, "vars", "spec.vars")
-      sources <- optionalMapping(fields, "sources", "spec.sources").map:
-        case Some(value) => Some(decodeSources(value))
-        case None        => None
+      sources <- optionalMapping(fields, "sources", "spec.sources").flatMap:
+        case Some(value) => decodeSources(value).map(Some(_))
+        case None        => Right(None)
       plan <- optionalSequence(fields, "plan", "spec.plan").flatMap:
         case Some(items) => decodePlan(items)
         case None        => Right(Vector.empty)
@@ -152,15 +152,127 @@ object ManifestLoader:
       prompt = prompt
     )
 
-  private def decodeSources(raw: RawYaml): Sources =
-    val fields = raw.asMapping.getOrElse(VectorMap.empty)
-
-    Sources(
-      apt = fields.get("apt"),
-      dnf = fields.get("dnf"),
-      zypper = fields.get("zypper"),
-      flatpak = fields.get("flatpak"),
+  private def decodeSources(raw: RawYaml): DecodeResult[Sources] =
+    for
+      fields <- mapping(raw, "spec.sources")
+      apt <- optionalMapping(fields, "apt", "spec.sources.apt").flatMap:
+        case Some(value) => decodeAptSources(value).map(Some(_))
+        case None        => Right(None)
+      dnf <- optionalMapping(fields, "dnf", "spec.sources.dnf").flatMap:
+        case Some(value) => decodeDnfSources(value).map(Some(_))
+        case None        => Right(None)
+      zypper <- optionalMapping(fields, "zypper", "spec.sources.zypper").flatMap:
+        case Some(value) => decodeZypperSources(value).map(Some(_))
+        case None        => Right(None)
+      flatpak <- optionalMapping(fields, "flatpak", "spec.sources.flatpak").flatMap:
+        case Some(value) => decodeFlatpakSources(value).map(Some(_))
+        case None        => Right(None)
+    yield Sources(
+      apt = apt,
+      dnf = dnf,
+      zypper = zypper,
+      flatpak = flatpak,
       raw = raw
+    )
+
+  private def decodeAptSources(raw: RawYaml): DecodeResult[AptSources] =
+    for
+      fields <- mapping(raw, "spec.sources.apt")
+      repositories <- optionalSequence(fields, "repositories", "spec.sources.apt.repositories").flatMap:
+        case Some(items) => decodeAptRepositories(items)
+        case None        => Right(Vector.empty)
+      updateBeforeInstall <- optionalBoolean(fields, "updateBeforeInstall", "spec.sources.apt.updateBeforeInstall")
+    yield AptSources(
+      repositories = repositories,
+      updateBeforeInstall = updateBeforeInstall
+    )
+
+  private def decodeAptRepositories(items: Vector[RawYaml]): DecodeResult[Vector[AptRepository]] =
+    sequence(items.zipWithIndex.map((item, index) => decodeAptRepository(item, s"spec.sources.apt.repositories[$index]")))
+
+  private def decodeAptRepository(raw: RawYaml, at: String): DecodeResult[AptRepository] =
+    for
+      fields <- mapping(raw, at)
+      name <- requiredScalarString(fields, "name", s"$at.name")
+      keyUrl <- optionalScalarString(fields, "keyUrl", s"$at.keyUrl")
+      source <- requiredScalarString(fields, "source", s"$at.source")
+    yield AptRepository(
+      name = name,
+      keyUrl = keyUrl,
+      source = source
+    )
+
+  private def decodeDnfSources(raw: RawYaml): DecodeResult[DnfSources] =
+    for
+      fields <- mapping(raw, "spec.sources.dnf")
+      repositories <- optionalSequence(fields, "repositories", "spec.sources.dnf.repositories").flatMap:
+        case Some(items) => decodeDnfRepositories(items)
+        case None        => Right(Vector.empty)
+    yield DnfSources(repositories = repositories)
+
+  private def decodeDnfRepositories(items: Vector[RawYaml]): DecodeResult[Vector[DnfRepository]] =
+    sequence(items.zipWithIndex.map((item, index) => decodeDnfRepository(item, s"spec.sources.dnf.repositories[$index]")))
+
+  private def decodeDnfRepository(raw: RawYaml, at: String): DecodeResult[DnfRepository] =
+    for
+      fields <- mapping(raw, at)
+      name <- requiredScalarString(fields, "name", s"$at.name")
+      description <- optionalScalarString(fields, "description", s"$at.description")
+      baseUrl <- requiredScalarString(fields, "baseUrl", s"$at.baseUrl")
+      gpgKey <- optionalScalarString(fields, "gpgKey", s"$at.gpgKey")
+    yield DnfRepository(
+      name = name,
+      description = description,
+      baseUrl = baseUrl,
+      gpgKey = gpgKey
+    )
+
+  private def decodeZypperSources(raw: RawYaml): DecodeResult[ZypperSources] =
+    for
+      fields <- mapping(raw, "spec.sources.zypper")
+      repositories <- optionalSequence(fields, "repositories", "spec.sources.zypper.repositories").flatMap:
+        case Some(items) => decodeZypperRepositories(items)
+        case None        => Right(Vector.empty)
+    yield ZypperSources(repositories = repositories)
+
+  private def decodeZypperRepositories(items: Vector[RawYaml]): DecodeResult[Vector[ZypperRepository]] =
+    sequence(
+      items.zipWithIndex.map((item, index) => decodeZypperRepository(item, s"spec.sources.zypper.repositories[$index]"))
+    )
+
+  private def decodeZypperRepository(raw: RawYaml, at: String): DecodeResult[ZypperRepository] =
+    for
+      fields <- mapping(raw, at)
+      name <- requiredScalarString(fields, "name", s"$at.name")
+      url <- requiredScalarString(fields, "url", s"$at.url")
+      autoRefresh <- optionalBoolean(fields, "autoRefresh", s"$at.autoRefresh")
+    yield ZypperRepository(
+      name = name,
+      url = url,
+      autoRefresh = autoRefresh
+    )
+
+  private def decodeFlatpakSources(raw: RawYaml): DecodeResult[FlatpakSources] =
+    for
+      fields <- mapping(raw, "spec.sources.flatpak")
+      remotes <- optionalSequence(fields, "remotes", "spec.sources.flatpak.remotes").flatMap:
+        case Some(items) => decodeFlatpakRemotes(items)
+        case None        => Right(Vector.empty)
+    yield FlatpakSources(remotes = remotes)
+
+  private def decodeFlatpakRemotes(items: Vector[RawYaml]): DecodeResult[Vector[FlatpakRemote]] =
+    sequence(items.zipWithIndex.map((item, index) => decodeFlatpakRemote(item, s"spec.sources.flatpak.remotes[$index]")))
+
+  private def decodeFlatpakRemote(raw: RawYaml, at: String): DecodeResult[FlatpakRemote] =
+    for
+      fields <- mapping(raw, at)
+      name <- requiredScalarString(fields, "name", s"$at.name")
+      url <- requiredScalarString(fields, "url", s"$at.url")
+      ifMissing <- optionalBoolean(fields, "ifMissing", s"$at.ifMissing")
+    yield FlatpakRemote(
+      name = name,
+      url = url,
+      ifMissing = ifMissing
     )
 
   private def decodePlan(items: Vector[RawYaml]): DecodeResult[Vector[PlanEntry]] =
@@ -306,6 +418,15 @@ object ManifestLoader:
     fields.get(key) match
       case None        => Right(None)
       case Some(value) => scalarString(value, at).map(Some(_))
+
+  private def requiredScalarString(
+      fields: VectorMap[String, RawYaml],
+      key: String,
+      at: String
+  ): DecodeResult[String] =
+    fields.get(key) match
+      case None        => Left(s"$at is required")
+      case Some(value) => scalarString(value, at)
 
   private def optionalBoolean(
       fields: VectorMap[String, RawYaml],
