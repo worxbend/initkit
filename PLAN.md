@@ -2597,3 +2597,20 @@ state writers only. Checks passed:
 `./mill mill.scalalib.scalafmt/reformatAll`, final `./mill
 mill.scalalib.scalafmt/checkFormatAll`, final `./mill tui.test`,
 `git diff --check`, and `jq empty .agent-loop/tasks.json`.
+
+Validation checkpoint T004 / VALIDATION-65, 2026-06-29: the TUI polish
+checkpoint passed without source-code fixes. Project metadata still uses the
+checked-in `./mill` launcher, root `build.mill`, and `.scalafmt.conf`; no
+additional Makefile, justfile, sbt, Maven, npm, or module-local Mill YAML
+validation hooks were present. Mill discovery passed for
+`./mill --no-daemon resolve _`, listing `app`, `cli`, `config`, `core`,
+`host`, `selective`, and `tui`. Configured validation passed:
+`./mill __.compile`, `./mill __.test`, and
+`./mill mill.scalalib.scalafmt/checkFormatAll`. Checkpoint-specific validation
+also passed: `./mill tui.test`, `./mill app.run tui --help`, dry-run apply
+against `config.example.yaml` with
+`--state /tmp/initkit-tui-polish-checkpoint-state.json`, the no-state-file
+assertion, JSON checks for loop metadata, `git diff --check`, and the
+conflict-marker scan. Remaining risk is unchanged: full-screen manual TUI
+interaction is covered by terminal-free TUI tests and noninteractive smokes,
+not by a human-driven terminal session in this loop.
