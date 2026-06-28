@@ -188,6 +188,18 @@ variables, host facts, unresolved variables, and shell-literal command text.
 `./mill core.test`, `./mill __.compile`, `./mill __.test`, and
 `git diff --check` pass.
 
+Validation checkpoint VALIDATION-13, 2026-06-28: loop state and build metadata
+were rechecked for the current completed chunk. Mill discovery confirms the
+recursive compile targets include `app`, `cli`, `config`, `core`, `host`, and
+`tui`, and recursive test targets include `cli`, `config`, `core`, and `host`.
+The configured checks passed: `./mill __.compile` and `./mill __.test`.
+Additional validation passed: `git diff --check`, `jq empty
+.agent-loop/tasks.json`, and `./mill app.run --help`. `.scalafmt.conf` exists,
+but no local `scalafmt` executable or Mill formatting target is configured, so
+formatter validation remains unavailable. No source fix was needed; remaining
+risk is limited to future tasks wiring the resolved manifest into selection,
+state, and execution behavior.
+
 Validation checkpoint, 2026-06-28: `./mill app.compile` and `./mill app.test`
 were rerun for the completed T001-T003 chunk. Daemon-mode Mill cannot start its
 localhost server in this sandbox (`java.net.SocketException: Operation not
