@@ -1634,3 +1634,13 @@ interrupted, and remaining operation counts. Focused tests cover typed
 dispatch, representative event construction, dry-run operation data, and result
 counts. `./mill core.test`, `./mill __.compile`, `./mill __.test`,
 `git diff --check`, and `jq empty .agent-loop/tasks.json` pass.
+
+Validation checkpoint T016 / VALIDATION-19, 2026-06-28: state and execution
+engine behavior were revalidated before command/process executor work begins.
+Mill discovery passed for recursive compile and test targets. The configured
+checks passed: `./mill __.compile` and `./mill __.test`, including engine tests
+for success, skips, failure, continueOnError, dry-run, interrupt, and resume
+behavior. Additional validation passed: `git diff --check`, `jq empty
+.agent-loop/tasks.json`, and `./mill app.run --help`. No source fix was needed.
+`.scalafmt.conf` exists, but no local scalafmt executable or Mill formatting
+target is configured, so formatter validation remains unavailable.
