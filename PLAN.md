@@ -1826,3 +1826,18 @@ passed: `./mill core.compile`, `./mill core.test.testOnly
 initkit.core.BinaryDownloadsExecutorTests`, `./mill core.test`,
 `./mill __.compile`, `./mill __.test`, `git diff --check`, and
 `jq empty .agent-loop/tasks.json`.
+
+Progress note, 2026-06-28: T025 extended `binary-downloads` in the `core`
+module to install selected members from downloaded `tar.gz` archives. Archive
+downloads still use the same temp-file, checksum, mode, and atomic-replace
+path as direct binaries; archive members are extracted to a second temp file
+before installation. `archive.path` selection supports stripped member names
+and falls back to the raw member path for compatibility with existing manifest
+examples; tests pin that `stripComponents` is applied before selecting the
+installed member. Parallel binary-download entries now run through Ox
+`Flow.mapParUnordered` with the plan-entry `maxConcurrency`, and fail-fast
+parallel execution propagates the first item failure through Ox cancellation so
+remaining work stops when feasible. Checks passed:
+`./mill core.test.testOnly initkit.core.BinaryDownloadsExecutorTests`,
+`./mill core.test`, `./mill __.compile`, `./mill __.test`,
+`git diff --check`, and `jq empty .agent-loop/tasks.json`.
