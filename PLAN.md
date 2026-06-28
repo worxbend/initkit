@@ -2634,3 +2634,19 @@ and preview behavior. Checks passed:
 `docs/examples/*.yaml` profiles with throwaway `/tmp/initkit-doc-*-state.json`
 paths, the no-state-file assertion, `git diff --check`, and `jq empty
 .agent-loop/tasks.json`.
+
+Progress note T006 / iteration 67, 2026-06-29: added focused public example
+regression coverage in `core/test/src/initkit/core/PublicExampleRegressionTests.scala`.
+The suite loads, validates, resolves, selects, and dry-runs
+`docs/examples/ubuntu.yaml`, `fedora.yaml`, `endeavouros.yaml`, and
+`opensuse-tumbleweed.yaml` with deterministic runtime variables, fake host
+facts, a fake command executor, and dry-run source setup. Each example asserts a
+matching runnable entry plus representative dry-run actions for its documented
+legacy-parity coverage: Ubuntu apt source setup and binary symlink, Fedora DNF
+source setup and cargo packages, EndeavourOS pacman upgrade and AUR packages,
+and openSUSE zypper source setup, SDKMAN, and root file write. The tests supply
+a throwaway state path and assert no state file is created. Checks passed:
+`./mill config.test`, `./mill cli.test`, final `./mill core.test`,
+`./mill __.compile`, `./mill __.test`, final
+`./mill mill.scalalib.scalafmt/checkFormatAll`, `git diff --check`, and
+`jq empty .agent-loop/tasks.json`.
