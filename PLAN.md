@@ -1937,3 +1937,17 @@ render with `ToolkitRunner` and `Toolkit` primitives such as `dock`, `panel`,
 `TuiRunner` widgets should be reserved for gaps in toolkit primitives.
 `tamboui-picocli` is not being added yet because initkit's existing picocli
 command tree already owns CLI parsing.
+
+Progress note, 2026-06-28: T032 added a pure Scala TUI view model in the
+`tui` module before real terminal rendering. `TuiViewModel` summarizes
+manifest profile data, host facts, state-file status, run mode, ordered
+checklist rows, condition skip reasons, durable completed/interrupted/failed/
+running state, interrupt markers, counts, and selected runnable entries. The
+initial checklist selection starts with runnable rows selected unless
+`--select` is present, in which case only matching runnable rows start
+selected; `--skip` always unselects matching runnable rows. Focused tests cover
+view-model generation without starting a terminal, manifest-order row
+preservation, all required row statuses, interrupt metadata, focused toggling,
+and select-all-runnable behavior. Checks passed: `./mill tui.test`,
+`./mill __.compile`, `./mill __.test`, `git diff --check`, and
+`jq empty .agent-loop/tasks.json`.
