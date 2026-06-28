@@ -1679,3 +1679,17 @@ later package install executors, and flatpak remotes use `--if-not-exists` by
 default for idempotence where practical. Checks passed: `./mill core.test`,
 `./mill __.compile`, `./mill __.test`, `git diff --check`, and
 `jq empty .agent-loop/tasks.json`.
+
+Validation checkpoint VALIDATION-23, 2026-06-28: the completed command/process
+and source setup chunk was revalidated before package executor work begins.
+Project metadata still points to the checked-in `./mill` launcher as the native
+build entrypoint. Mill discovery passed for recursive compile and test targets:
+compile covers `app`, `cli`, `config`, `core`, `host`, and `tui`, and tests
+cover `cli`, `config`, `core`, and `host`. The configured checks passed:
+`./mill __.compile` (log `/tmp/initkit-validation-23-compile-1782666219.log`)
+and `./mill __.test` (log `/tmp/initkit-validation-23-test-1782666223.log`).
+Additional validation passed: `git diff --check`, `jq empty
+.agent-loop/tasks.json`, and `./mill app.run --help` (log
+`/tmp/initkit-validation-23-help-1782666238.log`). No source fix was needed.
+Formatter validation remains unavailable because `.scalafmt.conf` exists but no
+local `scalafmt` executable or Mill formatting target is configured.
