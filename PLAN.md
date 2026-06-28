@@ -1922,3 +1922,18 @@ create that state file. `git diff --check` and `jq empty
 .agent-loop/tasks.json` pass. Formatter validation remains unavailable because
 `.scalafmt.conf` exists but no local `scalafmt` executable or Mill formatting
 target is configured.
+
+Progress note, 2026-06-28: T031 reviewed the current TamboUI repository before
+real TUI implementation. The reviewed snapshot was `tamboui/tamboui` commit
+`fc60a9f` at version `0.5.0-SNAPSHOT`; notes from upstream `AGENTS.md`,
+`README.md`, docs, demos, `tamboui-toolkit`, `tamboui-tui`,
+`tamboui-jline3-backend`, and `tamboui-picocli` are recorded in
+`.agent-loop/memory.md`. Initkit will keep using `tamboui-toolkit` plus
+`tamboui-jline3-backend` in the `tui` module, relying on toolkit's transitive
+`tamboui-tui`, `tamboui-widgets`, `tamboui-core`, and `tamboui-css` APIs. The
+planned TUI implementation should start with a pure Scala view model, then
+render with `ToolkitRunner` and `Toolkit` primitives such as `dock`, `panel`,
+`row`, `column`, `scrollable`, `list`, `text`, and `dialog`; low-level
+`TuiRunner` widgets should be reserved for gaps in toolkit primitives.
+`tamboui-picocli` is not being added yet because initkit's existing picocli
+command tree already owns CLI parsing.
