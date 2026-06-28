@@ -1,14 +1,12 @@
 package initkit.cli
 
 import java.io.PrintWriter
-import java.nio.file.{Files, Path, Paths}
+import java.nio.file.{Path, Paths}
 import java.time.Clock
 import java.util.concurrent.Callable
-import scala.collection.immutable.VectorMap
 import scala.compiletime.uninitialized
 import scala.util.Try
 
-import initkit.config.ManifestLoadError
 import initkit.core.*
 import initkit.host.HostDetector
 import picocli.CommandLine
@@ -112,110 +110,67 @@ final class ApplyCommand extends Callable[Int]:
     )
 
     for
-      manifest <- loadManifest(options.configPath, hostFacts)
-      statePath = resolveStatePath(options.statePath, manifest, options.configPath)
-      resumed   = !shared.resetState && Files.exists(statePath)
-      state <- ExecutionStateStore
-        .loadOrInitialize(statePath, manifest, shared.resetState, clock)
-        .left
-        .map(_.message)
-      policy = ExecutionPolicy.fromManifest(
-        manifest.spec.policy,
-        Some(if dryRun then ExecutionRunMode.DryRun else ExecutionRunMode.Apply)
+      context <- CliLaunchContextLoader.load(
+        CliLaunchContextOptions(
+          configPath = options.configPath,
+          statePath = options.statePath,
+          resetState = options.resetState,
+          dryRun = options.dryRun,
+          onlyValues = options.onlyValues,
+          skipValues = options.skipValues,
+          hostFacts = hostFacts,
+          clock = clock
+        )
       )
-      sourceSetup      = SourceSetupGenerator.generate(manifest.spec.sources, hostFacts, policy)
-      selectionRequest = PlanSelectionRequest.fromFilters(
-        onlyValues.toVector,
-        skipValues.toVector,
-        ExecutionState.completedNames(state)
-      )
-      selection = PlanSelector.select(manifest, selectionRequest, hostFacts)
-      result <- runEngine(
-        manifest,
-        hostFacts,
-        state,
-        statePath,
-        policy,
-        sourceSetup,
-        selectionRequest,
-        clock
-      )
+      result <- runEngine(context, clock)
     yield ApplyReport(
-      manifest = manifest,
-      hostFacts = hostFacts,
-      statePath = statePath,
-      state = state,
-      sourceSetup = sourceSetup,
-      selection = selection,
+      manifest = context.manifest,
+      hostFacts = context.hostFacts,
+      statePath = context.statePath,
+      state = context.state,
+      sourceSetup = context.sourceSetup,
+      selection = context.selection,
       engineResult = result,
-      dryRun = dryRun,
-      resumed = resumed,
+      dryRun = options.dryRun,
+      resumed = context.resumed,
       configPath = options.configPath
     )
 
-  private def loadManifest(
-      configPath: Path,
-      hostFacts: initkit.host.HostFacts
-  ): Either[String, initkit.config.Manifest] = ManifestVariableResolver
-    .loadValidatedResolved(configPath, runtimeVariables, hostFacts)
-    .left
-    .map(describeManifestError)
-
   private def runEngine(
-      manifest: initkit.config.Manifest,
-      hostFacts: initkit.host.HostFacts,
-      state: ExecutionState,
-      statePath: Path,
-      policy: ExecutionPolicy,
-      sourceSetup: SourceSetupPlan,
-      selectionRequest: PlanSelectionRequest,
+      context: CliLaunchContext,
       clock: Clock
   ): Either[String, ExecutionEngineResult] =
     val commandMode =
-      if policy.mode == ExecutionRunMode.DryRun then CommandRunMode.DryRun
+      if context.policy.mode == ExecutionRunMode.DryRun then CommandRunMode.DryRun
       else CommandRunMode.Apply
     val commandRunner =
       new ProcessCommandRunner(SudoStrategy.Passthrough, mode = commandMode, clock = clock)
     val installer = new PackageManagerInstallers(
       commandExecutor = commandRunner,
-      aptUpdateBeforeInstall = sourceSetup.aptUpdateBeforeInstall,
-      hostFacts = hostFacts
+      aptUpdateBeforeInstall = context.sourceSetup.aptUpdateBeforeInstall,
+      hostFacts = context.hostFacts
     )
     val sourceSetupExecutor = SourceSetupExecutor(commandRunner)
     val request             = ExecutionEngineRequest(
-      manifest = manifest,
-      selection = selectionRequest,
-      hostFacts = hostFacts,
-      state = state,
-      statePath = statePath,
-      policy = policy
+      manifest = context.manifest,
+      selection = context.selectionRequest,
+      hostFacts = context.hostFacts,
+      state = context.state,
+      statePath = context.statePath,
+      policy = context.policy
     )
 
     ExecutionWithSourceSetup
-      .run(request, installer, sourceSetup, sourceSetupExecutor, ExecutionStateWriter.live, clock)
+      .run(
+        request,
+        installer,
+        context.sourceSetup,
+        sourceSetupExecutor,
+        ExecutionStateWriter.live,
+        clock
+      )
       .left
       .map(_.message)
-
-  private def resolveStatePath(
-      explicitStatePath: Option[Path],
-      manifest: initkit.config.Manifest,
-      configPath: Path
-  ): Path = explicitStatePath
-    .orElse(manifest.spec.vars.get("stateFile").map(Paths.get(_)))
-    .getOrElse(configPath.resolveSibling(
-      s".${manifest.metadata.name.getOrElse("initkit")}.state.json"
-    ))
-    .toAbsolutePath
-    .normalize()
-
-  private def runtimeVariables: RuntimeVariables = RuntimeVariables(
-    VectorMap.from(
-      Vector(
-        "HOME" -> sys.env.getOrElse("HOME", System.getProperty("user.home", "")),
-        "USER" -> sys.env.getOrElse("USER", System.getProperty("user.name", ""))
-      ).filter(_._2.nonEmpty)
-    )
-  )
 
   private def buildOptions(): Either[String, ApplyCommandOptions] =
     for
@@ -227,6 +182,10 @@ final class ApplyCommand extends Callable[Int]:
     yield ApplyCommandOptions(
       configPath = configPath,
       statePath = statePath,
+      resetState = shared.resetState,
+      dryRun = dryRun,
+      onlyValues = onlyValues.toVector,
+      skipValues = skipValues.toVector,
       renderer = CliRenderer(
         CliColorSettings.resolve(
           mode = colorMode,
@@ -246,8 +205,6 @@ final class ApplyCommand extends Callable[Int]:
         .left
         .map(error => s"Invalid debug log path '$value': ${error.getMessage}")
 
-  private def describeManifestError(error: ManifestLoadError): String = error.message
-
   private def commandOut: PrintWriter = spec.commandLine().getOut()
 
   private def commandErr: PrintWriter = spec.commandLine().getErr()
@@ -255,6 +212,10 @@ final class ApplyCommand extends Callable[Int]:
 private final case class ApplyCommandOptions(
     configPath: Path,
     statePath: Option[Path],
+    resetState: Boolean,
+    dryRun: Boolean,
+    onlyValues: Vector[String],
+    skipValues: Vector[String],
     renderer: CliRenderer,
     debugLogger: CliDebugLogger
 )

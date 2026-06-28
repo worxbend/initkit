@@ -8,6 +8,7 @@ import scala.collection.immutable.VectorMap
 
 import initkit.config.Manifest
 import initkit.core.{
+  ExecutionRunMode,
   ExecutionState,
   ExecutionStateStore,
   ManifestVariableResolver,
@@ -97,6 +98,50 @@ object InitkitCliTests extends TestSuite:
         assert(result.out.contains("Summary"))
         assert(!hasAnsi(result.out))
         assert(!os.exists(state))
+      finally os.remove.all(tmp)
+
+    test("shared launch context loads state policy source setup and filters"):
+      val tmp = os.temp.dir()
+      try
+        val hostFacts = HostFacts.fake(
+          distribution = Some("ubuntu"),
+          commands = Set("apt-get", "flatpak")
+        )
+        val manifest       = loadExampleManifest(hostFacts)
+        val statePath      = tmp / "state.json"
+        val completedState = ExecutionState.markCompleted(
+          ExecutionState.initial(manifest, fixedClock),
+          "apt-base-cli",
+          fixedClock.instant()
+        )
+
+        requireRight(ExecutionStateStore.write(statePath.toNIO, completedState))
+
+        val context = requireRight(
+          CliLaunchContextLoader.load(
+            CliLaunchContextOptions(
+              configPath = exampleConfig.toNIO,
+              statePath = Some(statePath.toNIO),
+              resetState = false,
+              dryRun = true,
+              onlyValues = Vector(" apt-packages ", ""),
+              skipValues = Vector("snap-packages"),
+              hostFacts = hostFacts,
+              clock = fixedClock
+            )
+          )
+        )
+
+        assert(context.stateFile.existedBeforeLoad)
+        assert(context.resumed)
+        assert(context.policy.mode == ExecutionRunMode.DryRun)
+        assert(context.sourceSetup.aptUpdateBeforeInstall)
+        assert(context.selectionRequest.only == Vector("apt-packages"))
+        assert(context.selectionRequest.skip == Vector("snap-packages"))
+        assert(context.selection.skipped.exists(entry =>
+          entry.entry.name.contains("apt-base-cli") &&
+            entry.userFacingReasons.contains("already completed in state")
+        ))
       finally os.remove.all(tmp)
 
     test("apply color never suppresses ANSI escapes"):
@@ -215,8 +260,8 @@ object InitkitCliTests extends TestSuite:
 
         requireRight(ExecutionStateStore.write(statePath.toNIO, completedState))
 
-        val viewModel = requireRight(
-          TuiCommandModelLoader.load(
+        val launch = requireRight(
+          TuiCommandModelLoader.loadSession(
             TuiCommandModelOptions(
               configPath = exampleConfig.toNIO,
               statePath = Some(statePath.toNIO),
@@ -229,9 +274,12 @@ object InitkitCliTests extends TestSuite:
             )
           )
         )
+        val viewModel = launch.viewModel
 
         assert(viewModel.profile.name == "developer-workstation")
         assert(viewModel.stateFile.status.toString == "Existing")
+        assert(launch.context.statePath == statePath.toNIO.toAbsolutePath.normalize())
+        assert(launch.context.sourceSetup.aptUpdateBeforeInstall)
         assert(viewModel.rows.exists(row =>
           row.name == "apt-base-cli" && row.status == TuiPlanRowStatus.Completed
         ))

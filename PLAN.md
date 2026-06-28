@@ -2450,3 +2450,21 @@ package entries do not trigger source setup. Checks passed: `./mill core.test`,
 `./mill __.compile`, `./mill __.test`,
 `./mill mill.scalalib.scalafmt/checkFormatAll`, `git diff --check`, and
 `jq empty .agent-loop/tasks.json`.
+
+Progress note T004, 2026-06-29: refactored user-facing CLI/TUI orchestration
+without changing command options, help output, dry-run summaries, color/debug
+behavior, TUI checklist behavior, or the shared execution engine path.
+`CliLaunchContextLoader` now owns the manifest resolution, runtime variables,
+state path/defaulting, state loading, policy creation, source setup generation,
+and plan-selection request that were duplicated between `ApplyCommand` and
+`TuiCommandModelLoader`. `ApplyCommand` adapts that context into the existing
+plain CLI report and `ExecutionWithSourceSetup` request; `TuiCommandModelLoader`
+adapts it into the existing `TuiLaunchModel` and `TuiViewModel` selection
+inputs. Focused CLI coverage pins normalized filters, existing-state detection,
+dry-run policy, source setup, completed-state skips, and TUI session state.
+Checks passed: `./mill cli.test`, `./mill tui.test`, `./mill __.compile`,
+`./mill __.test`, `./mill mill.scalalib.scalafmt/checkFormatAll`, the apply
+dry-run smoke with `/tmp/initkit-orchestration-refactor-state.json`, the
+matching no-state-file assertion, `./mill app.run apply --help`,
+`./mill app.run tui --help`, `git diff --check`, and `jq empty
+.agent-loop/tasks.json`.
