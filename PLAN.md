@@ -177,6 +177,17 @@ available commands, and missing-command skips. `./mill core.compile`,
 `./mill core.test`, `./mill __.compile`, `./mill __.test`, and
 `git diff --check` pass.
 
+Progress note, 2026-06-28: T010 added manifest variable resolution in the
+`core` module. `ManifestVariableResolver` resolves `${name}` placeholders from
+runtime variables, `spec.vars`, and host facts, resolving spec variables before
+walking typed manifest fields and raw YAML sources/plan specs. Unresolved
+variables return validation errors with field paths and plan-entry context, and
+the resolver treats shell syntax such as `$(...)` and backticks as literal text.
+Focused tests cover `config.example.yaml`, nested spec variables, repeated
+variables, host facts, unresolved variables, and shell-literal command text.
+`./mill core.test`, `./mill __.compile`, `./mill __.test`, and
+`git diff --check` pass.
+
 Validation checkpoint, 2026-06-28: `./mill app.compile` and `./mill app.test`
 were rerun for the completed T001-T003 chunk. Daemon-mode Mill cannot start its
 localhost server in this sandbox (`java.net.SocketException: Operation not
