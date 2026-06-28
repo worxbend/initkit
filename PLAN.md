@@ -81,6 +81,14 @@ non-stacktrace errors for missing config paths. Focused CLI tests were added,
 but Mill validation still cannot reach compilation in this sandbox because
 coursier downloads fail with `java.net.SocketException: Operation not permitted`.
 
+Progress note, 2026-06-28: T003 added `initkit.config` manifest models and a
+SnakeYAML Engine loader for top-level manifest metadata, policy, target,
+sources, plan entries, execution settings, conditions, and raw kind-specific
+plan specs. `config.example.yaml` coverage was added through focused loader
+tests, including path-aware YAML parse errors. Mill validation still cannot
+reach source compilation in this sandbox because coursier downloads fail with
+`java.net.SocketException: Operation not permitted`.
+
 Before implementing TUI-related work, scan the current TamboUI repository and
 docs, not only the existing local wrapper:
 
