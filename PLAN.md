@@ -217,6 +217,19 @@ entries in manifest order. Recursive validation passed with `./mill __.compile`
 and `./mill __.test`; `git diff --check` and `jq empty .agent-loop/tasks.json`
 also pass.
 
+Progress note, 2026-06-28: T015 added the first execution engine skeleton in
+the `core` module. `ExecutionEngine` processes selected entries in manifest
+order, emits scheduled/started/skipped/completed/failed/interrupted/dry-run
+events, writes state after terminal apply-mode transitions, honors
+`continueOnError`, and handles manifest `interrupt` entries directly so they
+write their configured state file, expose resume instructions, and return the
+configured exit code. State helpers now cover running, skipped, failed, and
+interrupted transitions in addition to completed entries. Focused engine tests
+cover order, condition and completed skips, fail-fast, continue-on-error,
+dry-run emission, and interrupt resume behavior. `./mill core.test`,
+`./mill __.compile`, `./mill __.test`, `git diff --check`, and
+`jq empty .agent-loop/tasks.json` pass.
+
 Validation checkpoint, 2026-06-28: `./mill app.compile` and `./mill app.test`
 were rerun for the completed T001-T003 chunk. Daemon-mode Mill cannot start its
 localhost server in this sandbox (`java.net.SocketException: Operation not

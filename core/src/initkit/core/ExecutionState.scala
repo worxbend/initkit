@@ -66,8 +66,9 @@ object ExecutionState:
       entryName: String,
       completedAt: Instant
   ): ExecutionState =
+    val entryIndex = state.entries.indexWhere(entry => entry.name.contains(entryName))
     val entries = state.entries.map: entry =>
-      if entry.name.contains(entryName) then
+      if entry.index == entryIndex then
         entry.copy(
           status = PlanEntryStatus.Completed,
           startedAt = entry.startedAt.orElse(Some(completedAt)),
@@ -79,20 +80,111 @@ object ExecutionState:
     state.copy(
       updatedAt = completedAt,
       lastCompleted = Some(entryName),
-      nextPlanEntry = nextIncompleteEntryAfter(entries, entryName),
+      nextPlanEntry = nextOpenEntryAfter(entries, entryIndex),
       entries = entries
     )
 
-  private def nextIncompleteEntryAfter(
-      entries: Vector[PlanEntryState],
-      entryName: String
-  ): Option[String] =
-    val completedIndex = entries.indexWhere(entry => entry.name.contains(entryName))
+  def markStarted(
+      state: ExecutionState,
+      entryName: String,
+      startedAt: Instant
+  ): ExecutionState =
+    val entries = state.entries.map: entry =>
+      if entry.name.contains(entryName) then
+        entry.copy(
+          status = PlanEntryStatus.Running,
+          startedAt = entry.startedAt.orElse(Some(startedAt)),
+          message = None
+        )
+      else entry
 
+    state.copy(updatedAt = startedAt, nextPlanEntry = Some(entryName), entries = entries)
+
+  def markSkipped(
+      state: ExecutionState,
+      entryName: String,
+      reasons: Vector[String],
+      skippedAt: Instant
+  ): ExecutionState =
+    val entryIndex = state.entries.indexWhere(entry => entry.name.contains(entryName))
+    val entries = state.entries.map: entry =>
+      if entry.index == entryIndex then
+        entry.copy(
+          status = PlanEntryStatus.Skipped,
+          completedAt = Some(skippedAt),
+          message = Some(reasons.mkString("; "))
+        )
+      else entry
+
+    state.copy(
+      updatedAt = skippedAt,
+      nextPlanEntry = nextOpenEntryAfter(entries, entryIndex),
+      entries = entries
+    )
+
+  def markFailed(
+      state: ExecutionState,
+      entryName: String,
+      message: String,
+      failedAt: Instant,
+      continueAfterFailure: Boolean
+  ): ExecutionState =
+    val entryIndex = state.entries.indexWhere(entry => entry.name.contains(entryName))
+    val entries = state.entries.map: entry =>
+      if entry.index == entryIndex then
+        entry.copy(
+          status = PlanEntryStatus.Failed,
+          startedAt = entry.startedAt.orElse(Some(failedAt)),
+          completedAt = Some(failedAt),
+          message = Some(message)
+        )
+      else entry
+
+    state.copy(
+      updatedAt = failedAt,
+      nextPlanEntry =
+        if continueAfterFailure then nextOpenEntryAfter(entries, entryIndex)
+        else Some(entryName),
+      entries = entries
+    )
+
+  def markInterrupted(
+      state: ExecutionState,
+      entryName: String,
+      reason: String,
+      resumeFrom: Option[InterruptResumeFrom],
+      interruptedAt: Instant
+  ): ExecutionState =
+    resumeFrom.getOrElse(InterruptResumeFrom.Current) match
+      case InterruptResumeFrom.Next =>
+        markCompleted(state, entryName, interruptedAt).copy(updatedAt = interruptedAt)
+      case InterruptResumeFrom.Current =>
+        val entries = state.entries.map: entry =>
+          if entry.name.contains(entryName) then
+            entry.copy(
+              status = PlanEntryStatus.Interrupted,
+              startedAt = entry.startedAt.orElse(Some(interruptedAt)),
+              completedAt = Some(interruptedAt),
+              message = Some(reason)
+            )
+          else entry
+
+        state.copy(updatedAt = interruptedAt, nextPlanEntry = Some(entryName), entries = entries)
+
+  private def nextOpenEntryAfter(
+      entries: Vector[PlanEntryState],
+      entryIndex: Int
+  ): Option[String] =
     entries
-      .drop(completedIndex + 1)
-      .find(entry => entry.status != PlanEntryStatus.Completed)
+      .drop(entryIndex + 1)
+      .find(entry => !isTerminal(entry.status))
       .flatMap(_.name)
+
+  private def isTerminal(status: PlanEntryStatus): Boolean =
+    status match
+      case PlanEntryStatus.Pending => false
+      case PlanEntryStatus.Running => false
+      case _                       => true
 
 final case class StateManifestIdentity(
     name: Option[String],
