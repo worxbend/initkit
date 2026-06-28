@@ -1841,3 +1841,21 @@ remaining work stops when feasible. Checks passed:
 `./mill core.test.testOnly initkit.core.BinaryDownloadsExecutorTests`,
 `./mill core.test`, `./mill __.compile`, `./mill __.test`,
 `git diff --check`, and `jq empty .agent-loop/tasks.json`.
+
+Validation checkpoint T026 / VALIDATION-30, 2026-06-28: shell-script and
+binary-download behavior was revalidated before user-home installers continue.
+Mill discovery confirms the current graph includes `app`, `cli`, `config`,
+`core`, `host`, `selective`, and `tui`; recursive compile targets include test
+modules for `cli`, `config`, `core`, and `host`, and recursive test targets
+remain `cli.test`, `config.test`, `core.test`, and `host.test`. The configured
+checks passed: `./mill __.compile` (log
+`/tmp/initkit-validation-30-compile-1782668809.log`) and `./mill __.test`
+(log `/tmp/initkit-validation-30-test-1782668812.log`). Additional checks
+passed: `git diff --check`, `jq empty .agent-loop/tasks.json`, a test-source
+audit confirming no production HTTP client calls in tests, and
+`./mill app.run --help` (log
+`/tmp/initkit-validation-30-help-1782668827.log`). No source fix was needed.
+Residual risks: formatter validation remains unavailable because `scalafmt` is
+not installed or exposed as a Mill target, and the archive tar reader still
+intentionally supports regular-file selection from standard `tar.gz` archives
+rather than every tar extension.
