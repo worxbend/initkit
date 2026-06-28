@@ -1,41 +1,164 @@
-# initkit
+<p align="center">
+  <img src="docs/assets/banner.svg" alt="Initkit banner" width="100%">
+</p>
 
-`initkit` is a Scala workstation bootstrap runner. It reads a Kubernetes-style
-YAML profile, resolves variables and host facts, previews the selected work, and
-then runs matching plan entries through either a plain CLI or an interactive TUI.
+<p align="center">
+  <a href="https://github.com/worxbend/initkit/actions/workflows/native-release.yml"><img alt="Native Release" src="https://github.com/worxbend/initkit/actions/workflows/native-release.yml/badge.svg"></a>
+  <img alt="Scala 3" src="https://img.shields.io/badge/Scala-3.8.2-dc322f?logo=scala&logoColor=white">
+  <img alt="Mill" src="https://img.shields.io/badge/Mill-1.1.7-5b5bd6">
+  <img alt="GraalVM" src="https://img.shields.io/badge/GraalVM-native%20ready-f2a900?logo=graalvm&logoColor=111111">
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-workstation%20bootstrap-2ea44f?logo=linux&logoColor=white">
+</p>
 
-The runnable example profile is [config.example.yaml](config.example.yaml).
+<p align="center">
+  <b>Turn a fresh Linux machine into your machine.</b><br>
+  One YAML file. One preview. One run. CLI or fancy TUI. No mystery bash soup.
+</p>
 
-## Requirements
+---
 
-- JDK 21 or newer
-- A Linux-like host for the package-manager workflows in `config.example.yaml`
-- A terminal that supports alternate-screen apps for `tui`
+## What Is Initkit?
 
-The repository includes the Mill 1.1.7 bootstrap script, so a global `mill`
-install is not required.
+`initkit` is a friendly workstation bootstrapper.
 
-## Quick Start
+You write a small Kubernetes-style YAML file that says:
 
-Preview the example profile without changing the machine:
+- which packages you want
+- which installer should handle them: `apt`, `dnf`, `pacman`, `zypper`, `flatpak`, `snap`, direct binary downloads, shell installers, Nerd Fonts, dotfiles, or commands
+- which operating systems each step belongs to
+- which steps can run in parallel
+- where to save state if you need to pause, log out, reboot, and continue later
+
+Then Initkit shows you what it is about to do and runs the matching steps for the current machine.
+
+Think of it like:
+
+> "Here is my developer laptop recipe. Please apply only the parts that make sense on this distro."
+
+## Why It Exists
+
+Fresh machines are exciting for about five minutes. Then you remember you need Git, Zsh, Docker, Flatpak apps, `kubectl`, Rust, fonts, dotfiles, shell setup, and that one command you always forget.
+
+Initkit makes that boring setup repeatable without turning your dotfiles repo into a giant pile of shell scripts.
+
+## The Vibe
+
+- 🧠 **Simple YAML** instead of custom bash logic everywhere
+- 🧪 **Dry-run first** so you can inspect the plan before touching the machine
+- 🐧 **Distro-aware** package steps for Ubuntu, Fedora, Arch/EndeavourOS, openSUSE, and friends
+- 🧰 **Many installer kinds** in one plan
+- 🧾 **State files** for interrupt/resume flows
+- 🎨 **Colorful CLI** for normal terminals
+- 🕹️ **Interactive TUI** for picking steps with checkboxes
+- 🚀 **Native Linux binary** via GraalVM release workflow
+
+## Tiny Example
+
+```yaml
+apiVersion: initkit.io/v1alpha1
+kind: WorkstationProfile
+
+metadata:
+  name: my-laptop
+
+spec:
+  policy:
+    dryRun: false
+    requireSudo: true
+
+  plan:
+    - name: fedora-cli
+      kind: dnf-packages
+      when:
+        os:
+          family: linux
+          distribution: fedora
+      spec:
+        install:
+          - "@development-tools"
+          - git
+          - curl
+          - jq
+          - zsh
+
+    - name: kubectl
+      kind: binary-downloads
+      execution:
+        mode: parallel
+        maxConcurrency: 4
+      spec:
+        items:
+          - name: kubectl
+            url: https://dl.k8s.io/release/v1.30.2/bin/linux/amd64/kubectl
+            destination: "${HOME}/.local/bin/kubectl"
+            mode: "0755"
+```
+
+Package managers install one item at a time. If `git` works but `some-wrong-name` fails, Initkit still attempts the next package and reports the partial failure clearly.
+
+## Install
+
+Native Linux amd64 builds are published from tags by GitHub Actions.
+
+```bash
+curl -L -o initkit \
+  https://github.com/worxbend/initkit/releases/latest/download/initkit-linux-amd64
+chmod +x initkit
+sudo mv initkit /usr/local/bin/initkit
+```
+
+If you are hacking on the repo, you do not need a global Mill install. The checked-in `./mill` launcher is enough.
+
+## Run It
+
+Preview the example without changing your machine:
 
 ```bash
 ./mill app.run apply --config config.example.yaml --dry-run
 ```
 
-Run the same profile:
+Apply it:
 
 ```bash
 ./mill app.run apply --config config.example.yaml
 ```
 
-Open the interactive TUI:
+Open the TUI:
 
 ```bash
 ./mill app.run tui --config config.example.yaml
 ```
 
-Show command help without opening the full-screen TUI:
+Run only package steps:
+
+```bash
+./mill app.run apply --config config.example.yaml --only apt-packages --dry-run
+```
+
+Skip something:
+
+```bash
+./mill app.run apply --config config.example.yaml --skip snap-packages
+```
+
+Use a state file:
+
+```bash
+./mill app.run apply \
+  --config config.example.yaml \
+  --state ~/.local/state/initkit/developer-workstation.state.json
+```
+
+## Native Binary Workflow
+
+From a release download:
+
+```bash
+initkit apply --config config.example.yaml --dry-run
+initkit tui --config config.example.yaml
+```
+
+From source:
 
 ```bash
 ./mill app.run --help
@@ -43,188 +166,73 @@ Show command help without opening the full-screen TUI:
 ./mill app.run tui --help
 ```
 
-## Manifest Shape
-
-Profiles use this top-level structure:
-
-```yaml
-apiVersion: initkit.io/v1alpha1
-kind: WorkstationProfile
-metadata:
-  name: developer-workstation
-spec:
-  target: {}
-  policy: {}
-  vars: {}
-  sources: {}
-  plan: []
-```
-
-`spec.target.os` is informational. It documents the system the profile was
-written for and is shown to users, but it does not select plan entries by
-itself. Selection is controlled by each plan entry's `when` block evaluated
-against the current host facts detected from the JVM, `/etc/os-release`, CPU
-architecture, and executable lookup on `PATH`.
-
-Variables use `${name}` interpolation. Runtime variables include `HOME` and
-`USER`; host-derived variables include names such as `host.os.family`,
-`host.os.distribution`, `host.os.codename`, `host.architecture`, `osFamily`, and
-`arch`. `spec.vars` can reference runtime, host, and earlier/later manifest
-variables. Shell syntax such as `$(...)` and backticks is treated as literal
-text, not executed.
-
-## Supported Plan Kinds
-
-Package kinds:
-
-- `apt-packages`
-- `pacman-packages`
-- `dnf-packages`
-- `zypper-packages`
-- `flatpak-packages`
-- `snap-packages`
-
-Installer kinds:
-
-- `binary-downloads`
-- `shell-scripts`
-- `nerd-fonts`
-- `dotfiles-apply`
-- `interrupt`
-- `commands`
-
-Each `spec.plan` entry needs a unique `name`, one supported `kind`, and a
-kind-specific `spec`. Optional `execution` settings include `mode: sequential`
-or `mode: parallel`, `maxConcurrency`, `failFast`, and `locks`. Optional `when`
-selectors support host OS matches and `commandExists`.
-
-`spec.sources` can describe package-manager source setup for apt, dnf, zypper,
-and flatpak. The CLI and TUI show generated source setup operations in previews;
-the apt `updateBeforeInstall` marker also causes apt package entries to run
-`apt-get update` before package installation.
-
-## CLI Workflow
-
-`apply` loads the manifest, resolves variables, detects the host, loads or
-creates state, filters plan entries, and runs the shared execution engine.
-
-Useful options:
-
-- `--config PATH`: YAML profile path. Defaults to `config.yaml`.
-- `--dry-run`: preview operations without applying changes or writing engine state.
-- `--only NAME_OR_KIND`: run matching entries by name or kind. Repeatable.
-- `--skip NAME_OR_KIND`: skip matching entries by name or kind. Repeatable.
-- `--state PATH`: read and write execution state in a separate JSON file.
-- `--reset-state`: ignore an existing state file and start fresh.
-- `--color auto|always|never` and `--no-color`: control ANSI output.
-- `--debug` and `--debug-log PATH`: emit redacted diagnostic logs.
-
-Examples:
+Build a native image locally when GraalVM is installed:
 
 ```bash
-./mill app.run apply --config config.example.yaml --dry-run
-./mill app.run apply --config config.example.yaml --only apt-packages
-./mill app.run apply --config config.example.yaml --skip snap-packages
-./mill app.run apply --config config.example.yaml --state ~/.local/state/initkit/developer-workstation.state.json
+GRAALVM_HOME=/path/to/graalvm ./mill app.nativeImage
 ```
 
-## TUI Workflow
+The release workflow builds the Linux amd64 native image for `v*` tags.
 
-`tui` loads the same manifest and state model as `apply`, then opens a checklist
-view. Runnable rows are selectable checkboxes; skipped, completed, failed,
-interrupted, and running rows remain visible but disabled.
+## Build From Source
 
-Start the TUI with the example profile:
+Requirements:
 
-```bash
-./mill app.run tui --config config.example.yaml
-```
+- JDK 21+
+- Linux for the real package-manager workflows
+- GraalVM 21 only if you want native-image locally
 
-Preselect or unselect entries before the UI opens:
-
-```bash
-./mill app.run tui --config config.example.yaml --select apt-packages --skip snap-packages
-./mill app.run tui --config config.example.yaml --dry-run
-```
-
-Keyboard controls:
-
-- Up/Down, Home/End: move focus
-- Space/Enter: toggle the focused runnable row
-- `a`: select all runnable rows
-- `p`: preview selected rows
-- `r`: run selected rows
-- `R`: run all currently runnable rows
-- `e`: resume from state
-- `d`: append focused-row details to the log
-- `q`: quit
-
-## State, Interrupts, And Resume
-
-Execution state is stored separately from the manifest as JSON. The state path
-is chosen in this order:
-
-1. `--state PATH`
-2. resolved `spec.vars.stateFile`
-3. a sibling file named `.<metadata.name>.state.json`
-
-State is tied to the manifest name and a fingerprint of the resolved manifest.
-If a state file belongs to a different profile or profile contents, initkit
-stops and asks for `--reset-state`.
-
-The `interrupt` plan kind cleanly stops a run, writes the configured state file,
-prints instructions, and exits with the configured code. The example manifest
-uses this after shell packages are installed:
-
-```bash
-./mill app.run apply \
-  --config config.example.yaml \
-  --state ~/.local/state/initkit/developer-workstation.state.json
-
-# after logging out/back in or otherwise satisfying the instructions:
-./mill app.run apply \
-  --config config.example.yaml \
-  --state ~/.local/state/initkit/developer-workstation.state.json
-```
-
-The TUI uses the same state file:
-
-```bash
-./mill app.run tui \
-  --config config.example.yaml \
-  --state ~/.local/state/initkit/developer-workstation.state.json
-```
-
-## Safety Model
-
-- Use `--dry-run` first. Dry-run mode prints command, file-write, download, and
-  state-write previews without running installers or writing engine state.
-- Manifest validation rejects unsupported API versions, unknown plan kinds,
-  duplicate or missing plan names, invalid execution settings, invalid checksum
-  algorithms, malformed installer specs, and interrupt state paths that reuse the
-  manifest path.
-- Host selection is explicit through `when`; non-matching entries are skipped
-  with reasons instead of being run opportunistically.
-- Commands preserve direct argv boundaries. Shell execution is used only for
-  plan kinds or manifest fields that explicitly model shell text.
-- Logs and debug output redact sensitive arguments, environment values, and
-  token/password-shaped text.
-- Downloads install through temporary files, verify configured SHA-256/SHA-512
-  checksums, set requested file modes, and then move into place.
-- State writes create parent directories and use an atomic move when the
-  filesystem supports it.
-
-## Development Checks
+Common development commands:
 
 ```bash
 ./mill __.compile
 ./mill __.test
-./mill mill.scalalib.scalafmt/checkFormatAll
-./mill tui.test   # includes the noninteractive TUI smoke
+./mill app.run --help
+./mill app.run apply --config config.example.yaml --dry-run
 ```
 
-Use `./mill mill.scalalib.scalafmt/reformatAll` to apply the checked-in
-`.scalafmt.conf` before rerunning the formatter check.
+Formatting:
 
-Tamboui is currently consumed from Sonatype snapshot builds, configured in
-[build.mill](build.mill).
+```bash
+./mill mill.scalalib.scalafmt/checkFormatAll
+./mill mill.scalalib.scalafmt/reformatAll
+```
+
+## Docs
+
+- 📘 [Config structure](docs/config-structure.md)
+- 🧪 [Example profiles](docs/examples.md)
+- 🧑‍💻 [Developer guide](docs/developer-guide.md)
+- 🏗️ [Architecture overview](docs/architecture.md)
+
+Copy-pasteable distro examples:
+
+- [Ubuntu](docs/examples/ubuntu.yaml)
+- [Fedora](docs/examples/fedora.yaml)
+- [EndeavourOS / Arch](docs/examples/endeavouros.yaml)
+- [openSUSE Tumbleweed](docs/examples/opensuse-tumbleweed.yaml)
+
+## Project Status
+
+Initkit is young, useful, and still moving fast. The manifest API is currently `initkit.io/v1alpha1`, which means the shape is intentionally explicit but still allowed to evolve.
+
+Use dry-run. Read the plan. Then let it cook.
+
+## Contributing
+
+Small, boring improvements are welcome:
+
+- clearer docs
+- more distro examples
+- better validation messages
+- more installer kinds
+- sharper TUI details
+- safer execution edges
+
+Start with [docs/developer-guide.md](docs/developer-guide.md).
+
+---
+
+<p align="center">
+  <b>Initkit</b> - because "new laptop day" should feel fun, not like archaeology.
+</p>

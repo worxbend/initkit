@@ -1,13 +1,54 @@
-.bsp/
-.idea/
-.metals/
-.vscode/
+# Build outputs
 out/
 target/
-.bloop/
-.scala-build/
+dist/
 *.class
+*.jar
+*.war
+*.ear
+*.native
+native-executable
+
+# Mill / Scala tooling
+.bloop/
+.bsp/
+.metals/
+.scala-build/
+.scala_dependencies
+.scala_history
+
+# IDEs and editors
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and diagnostics
 *.log
+*.trace
+hs_err_pid*
+replay_pid*
+
+# Local runtime config and state
+config.yaml
+config.local.yaml
+*.state.json
+*.debug.log
+
+# Release/package artifacts
+*.tar.gz
+*.tgz
+*.zip
+SHA256SUMS
 
 # Agent Loop runtime
 .agent-loop/
+
+# Local Codex/session scratch data
+.codex/

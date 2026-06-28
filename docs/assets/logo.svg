@@ -1,0 +1,9 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Initkit logo">
+  <rect width="512" height="512" rx="112" fill="#111827"/>
+  <path d="M120 146C120 131.641 131.641 120 146 120H366C380.359 120 392 131.641 392 146V366C392 380.359 380.359 392 366 392H146C131.641 392 120 380.359 120 366V146Z" fill="#0F172A" stroke="#38BDF8" stroke-width="14"/>
+  <path d="M169 184H343" stroke="#A7F3D0" stroke-width="18" stroke-linecap="round"/>
+  <path d="M169 256H286" stroke="#FDE68A" stroke-width="18" stroke-linecap="round"/>
+  <path d="M169 328H319" stroke="#F9A8D4" stroke-width="18" stroke-linecap="round"/>
+  <circle cx="351" cy="328" r="16" fill="#34D399"/>
+  <path d="M220 224L256 256L220 288" stroke="#E5E7EB" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

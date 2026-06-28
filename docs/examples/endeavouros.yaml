@@ -1,0 +1,95 @@
+apiVersion: initkit.io/v1alpha1
+kind: WorkstationProfile
+
+metadata:
+  name: endeavour-dev
+  labels:
+    distro: endeavouros
+
+spec:
+  target:
+    os:
+      family: linux
+      distribution: endeavouros
+      architecture: amd64
+
+  policy:
+    dryRun: false
+    continueOnError: false
+    requireSudo: true
+    reboot:
+      allowed: false
+      prompt: true
+
+  vars:
+    home: "${HOME}"
+    user: "${USER}"
+    binDir: "${HOME}/.local/bin"
+    stateFile: "${HOME}/.local/state/initkit/endeavour-dev.state.json"
+
+  plan:
+    - name: arch-base-cli
+      kind: pacman-packages
+      description: Build tools and terminal basics for Arch-family systems.
+      execution:
+        mode: sequential
+        locks: [system-package-manager]
+      when:
+        os:
+          family: linux
+          distribution:
+            oneOf: [arch, endeavouros]
+      spec:
+        sync: true
+        install:
+          - base-devel
+          - ca-certificates
+          - curl
+          - git
+          - gnupg
+          - jq
+          - unzip
+          - zsh
+
+    - name: arch-containers
+      kind: pacman-packages
+      description: Container tooling for Arch-family systems.
+      execution:
+        mode: sequential
+        locks: [system-package-manager]
+      when:
+        os:
+          family: linux
+          distribution:
+            oneOf: [arch, endeavouros]
+      spec:
+        install:
+          - docker
+          - docker-buildx
+          - docker-compose
+
+    - name: user-tools
+      kind: pacman-packages
+      description: Nice-to-have user tools.
+      execution:
+        mode: sequential
+        locks: [system-package-manager]
+      when:
+        os:
+          family: linux
+          distribution:
+            oneOf: [arch, endeavouros]
+      spec:
+        install:
+          - ripgrep
+          - fd
+          - bat
+
+    - name: local-bin
+      kind: commands
+      description: Make sure user-local bin exists.
+      spec:
+        items:
+          - name: ensure-local-bin
+            run: "mkdir -p ${binDir}"
+            sudo: false

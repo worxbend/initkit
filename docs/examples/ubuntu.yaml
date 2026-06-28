@@ -1,0 +1,108 @@
+apiVersion: initkit.io/v1alpha1
+kind: WorkstationProfile
+
+metadata:
+  name: ubuntu-dev
+  labels:
+    distro: ubuntu
+
+spec:
+  target:
+    os:
+      family: linux
+      distribution: ubuntu
+      version: "24.04"
+      codename: noble
+      architecture: amd64
+
+  policy:
+    dryRun: false
+    continueOnError: false
+    requireSudo: true
+    reboot:
+      allowed: false
+      prompt: true
+
+  vars:
+    home: "${HOME}"
+    user: "${USER}"
+    binDir: "${HOME}/.local/bin"
+    stateFile: "${HOME}/.local/state/initkit/ubuntu-dev.state.json"
+
+  sources:
+    apt:
+      repositories:
+        - name: docker
+          keyUrl: https://download.docker.com/linux/ubuntu/gpg
+          source: "deb [arch=amd64] https://download.docker.com/linux/ubuntu noble stable"
+      updateBeforeInstall: true
+    flatpak:
+      remotes:
+        - name: flathub
+          url: https://flathub.org/repo/flathub.flatpakrepo
+          ifMissing: true
+
+  plan:
+    - name: ubuntu-base-cli
+      kind: apt-packages
+      description: Build tools and everyday terminal basics.
+      execution:
+        mode: sequential
+        locks: [system-package-manager]
+      when:
+        os:
+          family: linux
+          distribution:
+            oneOf: [ubuntu, debian]
+      spec:
+        update: true
+        install:
+          - build-essential
+          - ca-certificates
+          - curl
+          - git
+          - gnupg
+          - jq
+          - unzip
+          - zsh
+
+    - name: ubuntu-containers
+      kind: apt-packages
+      description: Docker packages from the configured apt source.
+      execution:
+        mode: sequential
+        locks: [system-package-manager]
+      when:
+        os:
+          family: linux
+          distribution:
+            oneOf: [ubuntu, debian]
+      spec:
+        install:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+
+    - name: flathub-apps
+      kind: flatpak-packages
+      description: A couple of desktop apps through Flathub.
+      execution:
+        mode: sequential
+        locks: [desktop-package-manager]
+      spec:
+        remote: flathub
+        system: true
+        install:
+          - org.mozilla.firefox
+          - com.spotify.Client
+
+    - name: local-bin
+      kind: commands
+      description: Make sure user-local bin exists.
+      spec:
+        items:
+          - name: ensure-local-bin
+            run: "mkdir -p ${binDir}"
+            sudo: false

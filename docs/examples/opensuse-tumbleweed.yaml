@@ -1,0 +1,97 @@
+apiVersion: initkit.io/v1alpha1
+kind: WorkstationProfile
+
+metadata:
+  name: tumbleweed-dev
+  labels:
+    distro: opensuse-tumbleweed
+
+spec:
+  target:
+    os:
+      family: linux
+      distribution: opensuse-tumbleweed
+      architecture: amd64
+
+  policy:
+    dryRun: false
+    continueOnError: false
+    requireSudo: true
+    reboot:
+      allowed: false
+      prompt: true
+
+  vars:
+    home: "${HOME}"
+    user: "${USER}"
+    binDir: "${HOME}/.local/bin"
+    stateFile: "${HOME}/.local/state/initkit/tumbleweed-dev.state.json"
+
+  sources:
+    flatpak:
+      remotes:
+        - name: flathub
+          url: https://flathub.org/repo/flathub.flatpakrepo
+          ifMissing: true
+
+  plan:
+    - name: tumbleweed-base-cli
+      kind: zypper-packages
+      description: Build tools and terminal basics.
+      execution:
+        mode: sequential
+        locks: [system-package-manager]
+      when:
+        os:
+          family: linux
+          distribution:
+            oneOf: [opensuse, opensuse-tumbleweed, opensuse-leap, sles]
+      spec:
+        refresh: true
+        install:
+          - patterns-devel-base-devel_basis
+          - ca-certificates
+          - curl
+          - git
+          - gpg2
+          - jq
+          - unzip
+          - zsh
+
+    - name: tumbleweed-containers
+      kind: zypper-packages
+      description: Container tooling for openSUSE.
+      execution:
+        mode: sequential
+        locks: [system-package-manager]
+      when:
+        os:
+          family: linux
+          distribution:
+            oneOf: [opensuse, opensuse-tumbleweed, opensuse-leap, sles]
+      spec:
+        install:
+          - docker
+          - docker-compose
+
+    - name: tumbleweed-flatpaks
+      kind: flatpak-packages
+      description: Desktop apps through Flathub.
+      execution:
+        mode: sequential
+        locks: [desktop-package-manager]
+      spec:
+        remote: flathub
+        system: true
+        install:
+          - org.mozilla.firefox
+          - com.spotify.Client
+
+    - name: local-bin
+      kind: commands
+      description: Make sure user-local bin exists.
+      spec:
+        items:
+          - name: ensure-local-bin
+            run: "mkdir -p ${binDir}"
+            sudo: false
