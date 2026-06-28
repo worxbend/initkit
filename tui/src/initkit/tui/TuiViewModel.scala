@@ -54,6 +54,8 @@ final case class TuiViewModel(
 ):
   def focusedRow: Option[TuiPlanRow] = focusedIndex.flatMap(index => rows.find(_.index == index))
 
+  def focusedRowPosition: Option[Int] = focusedPosition
+
   def selectedEntryNames: Vector[String] = rows.collect { case row if row.selected => row.name }
 
   def toggleFocused: TuiViewModel = focusedPosition match
@@ -132,6 +134,7 @@ object TuiViewModel:
       name = entry.name.getOrElse("<unnamed>"),
       kind = entry.kind.getOrElse("<unknown>"),
       description = entry.description,
+      executionMode = entry.execution.flatMap(_.mode).getOrElse("sequential"),
       status = status,
       selected = selected,
       selectable = selectable,
@@ -276,6 +279,7 @@ final case class TuiPlanRow(
     name: String,
     kind: String,
     description: Option[String],
+    executionMode: String,
     status: TuiPlanRowStatus,
     selected: Boolean,
     selectable: Boolean,

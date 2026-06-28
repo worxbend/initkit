@@ -2561,3 +2561,19 @@ workstation-runner UI. The exact later touch points remain
 `TambouiApp.scala`, `TuiViewModel.scala`, `TuiExecution.scala`,
 `TuiCommand.scala` only if launch data needs a view-only field, and the
 existing `TuiViewModelTests`, `TuiExecutionTests`, and `TuiSmokeTests`.
+
+Progress note T002 / iteration 63, 2026-06-29: polished the current TamboUI
+plan panes without changing CLI option semantics or execution behavior.
+`TambouiApp.scala` now renders the plan through Toolkit `table()` with an
+explicit `TableState` synchronized from the view-model focus, framed `[ Plan ]`,
+`[ Details ]`, and `[ Log ]` panes use rounded borders, and details/log content
+uses Toolkit `scrollable(...)`. `TuiViewModel.scala` now exposes each row's
+execution mode for the plan table. `TuiTextLayout` provides terminal-free
+table-row projections with selection, index, name, kind, status, and execution
+mode columns, non-color status markers, and `CharWidth.truncateWithEllipsis`
+for narrow-width fallbacks. `TuiViewModelTests` now cover table header text,
+focused/selected markers, disabled skipped rows, detail reasons, execution
+mode display, focus/selection behavior, and narrow-cell ellipsis. Checks passed:
+`./mill tui.test`, `./mill cli.test`, `./mill __.compile`, `./mill __.test`,
+`./mill mill.scalalib.scalafmt/checkFormatAll`, `./mill app.run tui --help`,
+`git diff --check`, and `jq empty .agent-loop/tasks.json`.

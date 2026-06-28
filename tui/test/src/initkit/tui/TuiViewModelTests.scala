@@ -112,22 +112,57 @@ object TuiViewModelTests extends TestSuite:
       assert(selected.selectedEntryNames == Vector("runnable"))
       assert(selected.counts.selected == 1)
 
-    test("text layout renders ASCII checklist markers and disabled reasons"):
+    test("text layout renders table columns and disabled rows"):
       val viewModel = buildViewModel()
-      val lines     = TuiTextLayout.checklistLines(viewModel)
-      val textLines = lines.map(_.text)
+      val rows      = TuiTextLayout.planTableRows(viewModel)
+      val lines     = TuiTextLayout.renderPlanTableLines(viewModel)
 
-      assert(textLines.exists(_.contains("> [x] run runnable (commands)")))
-      assert(textLines.exists(_.contains("[-] skip fedora-only (commands) disabled")))
+      assert(lines.head.contains("Sel"))
+      assert(lines.head.contains("Name"))
+      assert(lines.head.contains("Kind"))
+      assert(lines.head.contains("Status"))
+      assert(lines.head.contains("Mode"))
+      assert(rows.head.selection == ">[x]")
+      assert(rows.head.index == "01")
+      assert(rows.head.name == "runnable")
+      assert(rows.head.kind == "commands")
+      assert(rows.head.status == "run *")
+      assert(rows.head.executionMode == "sequential")
+      assert(rows(1).selection == " ---")
+      assert(rows(1).status == "skip -")
+      assert(!rows(1).selectable)
       assert(
-        textLines.exists(_.contains("reason: host distribution is 'ubuntu', expected 'fedora'"))
+        TuiTextLayout.detailsLines(viewModel.copy(focusedIndex = Some(1))).exists(
+          _.contains("reason: host distribution is 'ubuntu', expected 'fedora'")
+        )
       )
-      assert(textLines.exists(_.contains("[=] done completed (commands) disabled")))
       assert(TuiTextLayout.statusLine(viewModel).contains("developer-workstation"))
       assert(TuiTextLayout.detailsLines(viewModel).exists(_.contains("selected: yes")))
       assert(TuiTextLayout.outputLines(
         viewModel
       ).exists(_.contains("ready: 1 selected runnable entries")))
+
+    test("text layout truncates narrow table cells with ellipsis"):
+      val base      = buildViewModel()
+      val viewModel = base.copy(rows =
+        base.rows.updated(
+          0,
+          base.rows.head.copy(
+            name = "very-long-bootstrap-command-name",
+            kind = "very-long-installer-kind",
+            executionMode = "parallel"
+          )
+        )
+      )
+
+      val rows = TuiTextLayout.planTableRows(viewModel, TuiPlanTableWidths.Narrow)
+      val line = TuiTextLayout.renderPlanTableLines(viewModel, TuiPlanTableWidths.Narrow)(1)
+
+      assert(rows.head.name == "very-lo...")
+      assert(rows.head.kind == "very-...")
+      assert(rows.head.executionMode == "par...")
+      assert(line.contains("very-lo..."))
+      assert(line.contains("very-..."))
 
   private def buildViewModel(
       selection: TuiSelectionInputs = TuiSelectionInputs()

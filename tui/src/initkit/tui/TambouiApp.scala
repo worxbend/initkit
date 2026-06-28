@@ -2,14 +2,29 @@ package initkit.tui
 
 import dev.tamboui.layout.Flex.SPACE_BETWEEN
 import dev.tamboui.style.Color
-import dev.tamboui.toolkit.Toolkit.{column, panel, row, scrollable, spacer, text}
+import dev.tamboui.style.Style
+import dev.tamboui.text.CharWidth
+import dev.tamboui.text.CharWidth.TruncatePosition
+import dev.tamboui.toolkit.Toolkit.{
+  column,
+  fill,
+  length,
+  panel,
+  row,
+  scrollable,
+  spacer,
+  table,
+  text
+}
 import dev.tamboui.toolkit.element.Element
 import dev.tamboui.toolkit.elements.Panel
+import dev.tamboui.toolkit.elements.TableElement
 import dev.tamboui.toolkit.elements.TextElement
 import dev.tamboui.toolkit.event.EventResult
 import dev.tamboui.toolkit.app.ToolkitRunner
 import dev.tamboui.tui.event.KeyEvent
 import dev.tamboui.widgets.block.BorderType
+import dev.tamboui.widgets.table.{Row as TableRow, TableState}
 import ox.*
 import scala.util.control.NonFatal
 
@@ -30,6 +45,8 @@ private[tui] final class TuiAppState private (
     private var confirmQuit: Boolean,
     executionRunner: TuiExecutionRunner
 ):
+  private val planTableState: TableState = new TableState()
+
   def model: TuiViewModel = current
 
   def logLines: Vector[String] = log
@@ -37,6 +54,12 @@ private[tui] final class TuiAppState private (
   def workStatus: TuiWorkStatus = status
 
   def quitConfirmationVisible: Boolean = confirmQuit
+
+  def syncedPlanTableState(): TableState =
+    current.focusedRowPosition match
+      case Some(position) => planTableState.select(position)
+      case None           => planTableState.clearSelection()
+    planTableState
 
   def moveFocus(delta: Int): Unit = whenIdle:
     current = current.moveFocus(delta)
@@ -150,7 +173,7 @@ private[tui] object TuiRenderer:
 
     column(
       statusBar(model, state).length(1),
-      checklistPane(model).fill(4),
+      checklistPane(model, state).fill(4),
       detailsPane(model).fill(2),
       outputPane(state).fill(1),
       keyHints(state).length(1)
@@ -210,52 +233,96 @@ private[tui] object TuiRenderer:
     val line = TuiTextLayout.statusLine(model, state.workStatus, state.quitConfirmationVisible)
     text(line).white().bg(Color.indexed(235)).bold().ellipsis()
 
-  private def checklistPane(model: TuiViewModel): Panel =
-    val children = TuiTextLayout.checklistLines(model).map(checklistLineElement)
-    framedPanel("Plan checklist", scrollable(children*)).fill()
-
-  private def checklistLineElement(line: TuiChecklistLine): Element =
-    val element = text(line.text).ellipsis()
-    styleChecklistLine(element, line)
-
-  private def styleChecklistLine(element: TextElement, line: TuiChecklistLine): Element =
-    val colored = line.status match
-      case TuiPlanRowStatus.Runnable if line.focused => element.cyan().bold()
-      case TuiPlanRowStatus.Runnable                 => element.white()
-      case TuiPlanRowStatus.Skipped                  => element.yellow().dim()
-      case TuiPlanRowStatus.Completed                => element.green()
-      case TuiPlanRowStatus.Interrupted              => element.yellow()
-      case TuiPlanRowStatus.Failed                   => element.red()
-      case TuiPlanRowStatus.Running                  => element.cyan()
-
-    if line.focused then colored.bg(Color.indexed(236)) else colored
+  private def checklistPane(model: TuiViewModel, state: TuiAppState): Panel =
+    framedPanel("[ Plan ]", planTable(model, state = Some(state.syncedPlanTableState()))).fill()
 
   private def detailsPane(model: TuiViewModel): Panel = framedPanel(
-    "Details",
-    column(TuiTextLayout.detailsLines(model).map(line => text(line).ellipsis())*)
+    "[ Details ]",
+    scrollable(TuiTextLayout.detailsLines(model).map(line => text(line).ellipsis())*)
   ).fill()
 
   private def outputPane(state: TuiAppState): Panel = framedPanel(
-    "Log",
-    column(state.logLines.map(line => text(line).dim().ellipsis())*)
+    "[ Log ]",
+    scrollable(state.logLines.map(line => text(line).dim().ellipsis())*)
   ).fill()
 
   private def keyHints(state: TuiAppState): TextElement =
     text(TuiTextLayout.keyHints(state.quitConfirmationVisible)).gray().ellipsis()
 
+  private def planTable(model: TuiViewModel, state: Option[TableState]): TableElement =
+    val rows    = TuiTextLayout.planTableRows(model, TuiPlanTableWidths.Render).map(tableRow)
+    val element = table()
+      .header("Sel", "#", "Name", "Kind", "Status", "Mode")
+      .rows(rows*)
+      .widths(length(4), length(4), fill(), length(18), length(10), length(10))
+      .columnSpacing(1)
+      .highlightSymbol("")
+      .highlightStyle(Style.EMPTY.bg(Color.indexed(236)).bold())
+
+    state.map(element.state).getOrElse(element)
+
+  private def tableRow(row: TuiPlanTableRow): TableRow = TableRow
+    .from(row.selection, row.index, row.name, row.kind, row.status, row.executionMode)
+    .style(statusStyle(row.statusKind, row.focused))
+
+  private def statusStyle(status: TuiPlanRowStatus, focused: Boolean): Style =
+    val base = status match
+      case TuiPlanRowStatus.Runnable    => Style.EMPTY.white()
+      case TuiPlanRowStatus.Skipped     => Style.EMPTY.yellow().dim()
+      case TuiPlanRowStatus.Completed   => Style.EMPTY.green()
+      case TuiPlanRowStatus.Interrupted => Style.EMPTY.yellow().bold()
+      case TuiPlanRowStatus.Failed      => Style.EMPTY.red().bold()
+      case TuiPlanRowStatus.Running     => Style.EMPTY.cyan().bold()
+
+    if focused then base.bg(Color.indexed(236)) else base
+
   private def framedPanel(title: String, child: Element): Panel = panel(title, child)
-    .borderType(BorderType.PLAIN)
+    .borderType(BorderType.ROUNDED)
     .borderColor(Color.DARK_GRAY)
     .focusedBorderColor(Color.CYAN)
     .titleEllipsis()
     .padding(0)
 
-final case class TuiChecklistLine(
-    text: String,
-    status: TuiPlanRowStatus,
+final case class TuiPlanTableRow(
+    selection: String,
+    index: String,
+    name: String,
+    kind: String,
+    status: String,
+    executionMode: String,
+    statusKind: TuiPlanRowStatus,
     focused: Boolean,
     selectable: Boolean
 )
+
+final case class TuiPlanTableWidths(
+    selection: Int,
+    index: Int,
+    name: Int,
+    kind: Int,
+    status: Int,
+    executionMode: Int
+)
+
+object TuiPlanTableWidths:
+
+  val Render: TuiPlanTableWidths = TuiPlanTableWidths(
+    selection = 4,
+    index = 4,
+    name = 32,
+    kind = 18,
+    status = 10,
+    executionMode = 10
+  )
+
+  val Narrow: TuiPlanTableWidths = TuiPlanTableWidths(
+    selection = 4,
+    index = 3,
+    name = 10,
+    kind = 8,
+    status = 7,
+    executionMode = 6
+  )
 
 object TuiTextLayout:
 
@@ -278,27 +345,51 @@ object TuiTextLayout:
     val work = if confirmQuit then "confirm quit" else status.label
     s" initkit | $profile | $mode | $work | $selected | $skipped | $completed | $host "
 
-  def checklistLines(model: TuiViewModel): Vector[TuiChecklistLine] =
+  def planTableRows(
+      model: TuiViewModel,
+      widths: TuiPlanTableWidths = TuiPlanTableWidths.Render
+  ): Vector[TuiPlanTableRow] =
     if model.rows.isEmpty then
-      Vector(TuiChecklistLine(
-        "  [ ] no plan entries",
-        TuiPlanRowStatus.Skipped,
+      Vector(TuiPlanTableRow(
+        selection = "---",
+        index = "--",
+        name = fit("no plan entries", widths.name),
+        kind = fit("", widths.kind),
+        status = fit("skip -", widths.status),
+        executionMode = fit("", widths.executionMode),
+        statusKind = TuiPlanRowStatus.Skipped,
         focused = false,
         selectable = false
       ))
     else
-      model.rows.flatMap: row =>
+      model.rows.map: row =>
         val focused = model.focusedIndex.contains(row.index)
-        val main    = TuiChecklistLine(rowText(row, focused), row.status, focused, row.selectable)
-        val reasons = row.reasons.map(reason =>
-          TuiChecklistLine(
-            s"      reason: $reason",
-            row.status,
-            focused = false,
-            selectable = false
-          )
+        TuiPlanTableRow(
+          selection = fit(selectionMarker(row, focused), widths.selection),
+          index = fit(f"${row.index + 1}%02d", widths.index),
+          name = fit(row.name, widths.name),
+          kind = fit(row.kind, widths.kind),
+          status = fit(statusLabel(row.status), widths.status),
+          executionMode = fit(row.executionMode, widths.executionMode),
+          statusKind = row.status,
+          focused = focused,
+          selectable = row.selectable
         )
-        main +: reasons
+
+  def renderPlanTableLines(
+      model: TuiViewModel,
+      widths: TuiPlanTableWidths = TuiPlanTableWidths.Render
+  ): Vector[String] =
+    val header = renderPlanTableLine(
+      Vector("Sel", "#", "Name", "Kind", "Status", "Mode"),
+      widths
+    )
+    header +: planTableRows(model, widths).map(row =>
+      renderPlanTableLine(
+        Vector(row.selection, row.index, row.name, row.kind, row.status, row.executionMode),
+        widths
+      )
+    )
 
   def detailsLines(model: TuiViewModel): Vector[String] = model.focusedRow match
     case None      => Vector("No plan entry focused.")
@@ -306,6 +397,7 @@ object TuiTextLayout:
         s"name: ${row.name}",
         s"kind: ${row.kind}",
         s"status: ${statusLabel(row.status)}",
+        s"execution: ${row.executionMode}",
         s"selected: ${if row.selected then "yes" else "no"}",
         s"description: ${row.description.getOrElse("none")}"
       ) ++ row.reasons.map(reason => s"reason: $reason") ++ interruptLines(row)
@@ -317,29 +409,39 @@ object TuiTextLayout:
     s"ready: ${model.selectedEntryNames.size} selected runnable entries"
   )
 
-  private def rowText(row: TuiPlanRow, focused: Boolean): String =
-    val focus       = if focused then ">" else " "
-    val marker      = markerFor(row)
-    val disabled    = if row.selectable then "" else " disabled"
-    val description = row.description.map(value => s" - $value").getOrElse("")
-    s"$focus $marker ${statusLabel(row.status)} ${row.name} (${row.kind})$disabled$description"
+  private def renderPlanTableLine(cells: Vector[String], widths: TuiPlanTableWidths): String =
+    Vector(
+      pad(cells(0), widths.selection),
+      pad(cells(1), widths.index),
+      pad(cells(2), widths.name),
+      pad(cells(3), widths.kind),
+      pad(cells(4), widths.status),
+      pad(cells(5), widths.executionMode)
+    ).mkString(" ")
 
-  private def markerFor(row: TuiPlanRow): String = row.status match
-    case TuiPlanRowStatus.Runnable if row.selected => "[x]"
-    case TuiPlanRowStatus.Runnable                 => "[ ]"
-    case TuiPlanRowStatus.Completed                => "[=]"
-    case TuiPlanRowStatus.Failed                   => "[!]"
-    case TuiPlanRowStatus.Interrupted              => "[!]"
-    case TuiPlanRowStatus.Running                  => "[~]"
-    case TuiPlanRowStatus.Skipped                  => "[-]"
+  private def pad(value: String, width: Int): String =
+    val fitted = fit(value, width)
+    fitted + " " * (width - CharWidth.of(fitted)).max(0)
+
+  private def fit(value: String, width: Int): String =
+    if width <= 0 then ""
+    else CharWidth.truncateWithEllipsis(value, width, TruncatePosition.END)
+
+  private def selectionMarker(row: TuiPlanRow, focused: Boolean): String =
+    val focus  = if focused then ">" else " "
+    val marker =
+      if row.selected then "[x]"
+      else if row.selectable then "[ ]"
+      else "---"
+    s"$focus$marker"
 
   private def statusLabel(status: TuiPlanRowStatus): String = status match
-    case TuiPlanRowStatus.Runnable    => "run"
-    case TuiPlanRowStatus.Skipped     => "skip"
-    case TuiPlanRowStatus.Completed   => "done"
-    case TuiPlanRowStatus.Interrupted => "stop"
-    case TuiPlanRowStatus.Failed      => "fail"
-    case TuiPlanRowStatus.Running     => "busy"
+    case TuiPlanRowStatus.Runnable    => "run *"
+    case TuiPlanRowStatus.Skipped     => "skip -"
+    case TuiPlanRowStatus.Completed   => "done ="
+    case TuiPlanRowStatus.Interrupted => "stop !"
+    case TuiPlanRowStatus.Failed      => "fail x"
+    case TuiPlanRowStatus.Running     => "busy ~"
 
   private def interruptLines(row: TuiPlanRow): Vector[String] = row.interrupt match
     case None         => Vector.empty
