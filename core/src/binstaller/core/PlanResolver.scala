@@ -3,6 +3,9 @@ package binstaller.core
 import binstaller.config.ArchiveSpec
 import binstaller.config.BinaryDistributionProfile
 import binstaller.config.BinaryToolSpec
+import binstaller.config.ChecksumDiscoveryKind
+import binstaller.config.ChecksumDiscoverySpec
+import binstaller.config.ChecksumSpec
 import binstaller.config.DownloadSpec
 import binstaller.config.DynamicVersionKind
 import binstaller.config.ExtractMapping
@@ -241,16 +244,107 @@ private final class ResolutionBuilder(
     val url      = interpolate(download.url, s"$path.url", vars)
     val filename = interpolate(download.filename, s"$path.filename", vars)
     val archive  = resolveArchive(download.archive, path, vars, version)
+    val checksum = resolveChecksum(download.checksum, path, vars, version, filename.value)
 
     ResolvedValue(
-      ResolvedDownload(url.value, filename.value, download.checksum, archive.value),
+      ResolvedDownload(url.value, filename.value, checksum.value, archive.value),
       url.errors ++ versionTemplateErrors(download.url, s"$path.url", version) ++
         httpsUrlErrors(url.value, s"$path.url") ++
         filename.errors ++
         versionTemplateErrors(download.filename, s"$path.filename", version) ++
         ResolvedPathValidator.downloadFilename(filename.value, s"$path.filename") ++
+        checksum.errors ++
         archive.errors
     )
+
+  private def resolveChecksum(
+      checksum: Option[ChecksumSpec],
+      downloadPath: String,
+      vars: Map[String, String],
+      version: ResolvedVersion,
+      resolvedFilename: String
+  ): ResolvedValue[Option[ResolvedChecksum]] = checksum match
+    case None        => ResolvedValue.valid(None)
+    case Some(value) => value.value match
+        case Some(literal) => ResolvedValue.valid(Some(ResolvedChecksum(
+            value.algorithm,
+            literal,
+            ResolvedChecksumSource.Configured
+          )))
+        case None => value.discover match
+            case Some(discovery) => resolveDiscoveredChecksum(
+                value,
+                discovery,
+                downloadPath,
+                vars,
+                version,
+                resolvedFilename
+              )
+            case None => ResolvedValue.valid(None)
+
+  private def resolveDiscoveredChecksum(
+      checksum: ChecksumSpec,
+      discovery: ChecksumDiscoverySpec,
+      downloadPath: String,
+      vars: Map[String, String],
+      version: ResolvedVersion,
+      resolvedFilename: String
+  ): ResolvedValue[Option[ResolvedChecksum]] =
+    val sourcePath = s"$downloadPath.checksum.discover"
+    val url        = interpolate(discovery.url, s"$sourcePath.url", vars)
+    val file       = discovery.file match
+      case Some(value) => interpolate(value, s"$sourcePath.file", vars)
+      case None        => ResolvedValue.valid(resolvedFilename)
+    val fileErrors =
+      if file.value.trim.nonEmpty then Vector.empty
+      else Vector(ValidationError(s"$sourcePath.file", "checksum discovery file must not be empty"))
+    val requestErrors = url.errors ++
+      versionTemplateErrors(discovery.url, s"$sourcePath.url", version) ++
+      httpsUrlErrors(url.value, s"$sourcePath.url") ++
+      file.errors ++
+      discovery.file.toVector.flatMap(value =>
+        versionTemplateErrors(value, s"$sourcePath.file", version)
+      ) ++ fileErrors
+
+    if requestErrors.nonEmpty then ResolvedValue(None, requestErrors)
+    else
+      val fetched = httpTextClient.getTextWithProvenance(url.value) match
+        case Right(response) => parseChecksumFile(
+            response,
+            checksum,
+            discovery,
+            file.value,
+            sourcePath
+          )
+        case Left(error) => ResolvedValue.invalid(
+            None,
+            s"$sourcePath.url",
+            s"checksum discovery failed: ${error.message}"
+          )
+      ResolvedValue(fetched.value, requestErrors ++ fetched.errors)
+
+  private def parseChecksumFile(
+      response: HttpTextResponse,
+      checksum: ChecksumSpec,
+      discovery: ChecksumDiscoverySpec,
+      file: String,
+      sourcePath: String
+  ): ResolvedValue[Option[ResolvedChecksum]] = discovery.kind match
+    case ChecksumDiscoveryKind.Sha256Sum => Sha256SumChecksumFile.find(response.text, file) match
+        case Some(value) => ResolvedValue.valid(Some(ResolvedChecksum(
+            checksum.algorithm,
+            value,
+            ResolvedChecksumSource.Discovered(
+              response.provenance.initialUrl,
+              file,
+              response.provenance
+            )
+          )))
+        case None => ResolvedValue.invalid(
+            None,
+            sourcePath,
+            s"checksum discovery missing sha256sum entry for '$file'"
+          )
 
   private def resolveArchive(
       archive: Option[ArchiveSpec],
@@ -438,6 +532,28 @@ private final class ResolutionBuilder(
     RuntimeUrl.httpsUri(value) match
       case Right(_)      => Vector.empty
       case Left(message) => Vector(ValidationError(path, message))
+
+private[core] object Sha256SumChecksumFile:
+
+  private val HashPattern: Regex = "(?i)^[0-9a-f]{64}$".r
+
+  def find(content: String, file: String): Option[String] = content.linesIterator
+    .flatMap(parseLine)
+    .find((_, candidateFile) => candidateFile == file || fileName(candidateFile) == file)
+    .map((checksum, _) => checksum.toLowerCase(java.util.Locale.ROOT))
+
+  private def parseLine(line: String): Option[(String, String)] =
+    val trimmed = line.trim
+    if trimmed.isEmpty || trimmed.startsWith("#") then None
+    else
+      val parts = trimmed.split("\\s+", 2).toVector
+      parts match
+        case Vector(hash, path) if HashPattern.pattern.matcher(hash).matches() =>
+          Some(hash -> path.stripPrefix("*").trim)
+        case _ => None
+
+  private def fileName(path: String): String =
+    path.split('/').toVector.filter(_.nonEmpty).lastOption.getOrElse(path)
 
 private object ResolvedPathValidator:
 

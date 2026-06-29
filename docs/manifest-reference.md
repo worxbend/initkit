@@ -200,6 +200,24 @@ verifies checksums before staging replacement. Missing checksums remain allowed
 in developer mode, but plan/TUI surfaces mark them as risk. Strict mode rejects
 missing checksums unless `policy.allowMissingChecksums: true` is set.
 
+Profiles can also opt into checksum discovery from an upstream-published
+`sha256sum` file:
+
+```yaml
+checksum:
+  algorithm: sha256
+  discover:
+    type: sha256sum
+    url: "https://example.invalid/releases/${version}/SHA256SUMS"
+    file: "tool-${version}-linux-amd64.tar.gz"
+```
+
+`discover.type: sha256sum` fetches the HTTPS text file through the built-in text
+client and parses standard `<sha256> <file>` lines. `file` is optional; when it
+is omitted, the resolved `download.filename` is matched. Discovery is data-only:
+it does not run shell commands. Plan, `versions`, lock output, and checksum
+mismatch diagnostics label checksums as configured, discovered, or missing.
+
 ## Symlinks
 
 Local symlinks stay within the install directory:

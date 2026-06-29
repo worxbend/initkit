@@ -1,7 +1,5 @@
 package binstaller.core
 
-import binstaller.config.ChecksumSpec
-
 import java.nio.file.Path
 
 /** Whether apply should require a compatible lock file before rendering or installing. */
@@ -201,8 +199,8 @@ private[core] object LockedApplyValidator:
       Some(s"tool '${tool.name}' size changed: lock has $expected bytes, current is $actual bytes")
     case _ => None
 
-  private def lockChecksum(checksum: ChecksumSpec): LockFileChecksum =
-    LockFileChecksum(checksum.algorithm.value, checksum.value)
+  private def lockChecksum(checksum: ResolvedChecksum): LockFileChecksum =
+    LockFileChecksum.fromResolved(checksum)
 
   private def render(checksum: LockFileChecksum): String =
     s"${checksum.algorithm} ${checksum.value}"

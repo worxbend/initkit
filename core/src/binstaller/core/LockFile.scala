@@ -55,8 +55,42 @@ final case class LockFileTool(
     dynamicSource: Boolean
 )
 
-/** Serialized checksum metadata copied from the manifest. */
-final case class LockFileChecksum(algorithm: String, value: String)
+/** Serialized checksum metadata copied from the manifest or a typed discovery source. */
+final case class LockFileChecksum(
+    algorithm: String,
+    value: String,
+    source: String,
+    discoveryUrl: Option[String],
+    discoveryFile: Option[String],
+    discoveryProvenance: Option[UrlProvenance]
+)
+
+/** Lock-file checksum constructors and summaries. */
+object LockFileChecksum:
+
+  /** Build a configured checksum entry for legacy call sites and tests. */
+  def apply(algorithm: String, value: String): LockFileChecksum =
+    LockFileChecksum(algorithm, value, "configured", None, None, None)
+
+  /** Convert resolved checksum provenance into lock-file metadata. */
+  def fromResolved(checksum: ResolvedChecksum): LockFileChecksum = checksum.source match
+    case ResolvedChecksumSource.Configured =>
+      LockFileChecksum(checksum.algorithm.value, checksum.value)
+    case ResolvedChecksumSource.Discovered(url, file, provenance) => LockFileChecksum(
+        checksum.algorithm.value,
+        checksum.value,
+        "discovered",
+        Some(url),
+        Some(file),
+        Some(provenance)
+      )
+
+  /** Summarize checksum states across lock-file tools. */
+  def summary(tools: Vector[LockFileTool]): String =
+    val configured = tools.count(_.checksum.exists(_.source == "configured"))
+    val discovered = tools.count(_.checksum.exists(_.source == "discovered"))
+    val missing    = tools.count(_.checksum.isEmpty)
+    s"configured $configured, discovered $discovered, missing $missing"
 
 /** Lock-file JSON codecs and constructors. */
 object LockFile:

@@ -405,6 +405,16 @@ kind: BinaryDistributionProfile
   under OpenJDK 25.0.3. Remaining risks are the previously documented live TUI
   manual smoke gap and exact final URL lock provenance for provider-signed
   release asset URLs.
+- 2026-06-29: T015 added opt-in checksum discovery for upstream `sha256sum`
+  files. Manifests can now declare `download.checksum.discover` with
+  `type: sha256sum`, an HTTPS URL, and an optional file match; no shell command
+  execution is introduced. Resolution parses checksum-file text through the
+  existing HTTP text client, marks checksums as configured, discovered, or
+  missing in plan, `versions`, lock output, TUI details, and apply diagnostics,
+  and carries discovery source metadata into lock entries. Focused tests cover
+  discovery success, missing checksum file diagnostics, mismatched discovered
+  checksums before replacement, and redacted checksum-source diagnostics.
+  Config/core/CLI/TUI tests, recursive compile, and scalafmt check passed.
 
 ## Current Agent Loop State
 
@@ -422,6 +432,9 @@ is:
 - `binstaller lock` can persist resolved metadata for the current manifest, and
   `apply --locked` uses that file as a reproducibility gate before dry-run
   rendering or any filesystem/state writes.
+- Manifest checksums can be literal SHA-256 values or explicitly discovered from
+  upstream-published `sha256sum` text files; discovered values are previewed and
+  locked with source provenance.
 - Installer scripts are intentionally unsupported. Any `installer:` block should
   fail manifest validation and suggest direct binary or archive download.
 - The remaining command execution boundaries are structured and narrow: sudo

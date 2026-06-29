@@ -3,7 +3,6 @@ package binstaller.core
 import binstaller.config.AllowSudoSymlinks
 import binstaller.config.BinaryDistributionProfile
 import binstaller.config.BinaryToolSpec
-import binstaller.config.ChecksumSpec
 import binstaller.config.ConfigModule
 import binstaller.config.DownloadSpec
 import binstaller.config.DynamicVersionKind
@@ -496,7 +495,13 @@ final class DirectBinaryInstaller(
     case Some(checksum) =>
       val actual = Sha256.digest(bytes)
       if actual.equalsIgnoreCase(checksum.value) then Right(())
-      else Left(ToolInstallError.ChecksumMismatch(tool.name, checksum.value, actual))
+      else
+        Left(ToolInstallError.ChecksumMismatch(
+          tool.name,
+          checksum.value,
+          actual,
+          ResolvedChecksum.sourceDescription(checksum)
+        ))
 
   private def stage(
       tool: ResolvedTool,
@@ -868,7 +873,11 @@ private[core] object ManifestFingerprint:
     append(builder, s"$base.filename", download.filename)
     download.checksum.foreach: checksum =>
       append(builder, s"$base.checksum.algorithm", checksum.algorithm.value)
-      append(builder, s"$base.checksum.value", checksum.value)
+      checksum.value.foreach(value => append(builder, s"$base.checksum.value", value))
+      checksum.discover.foreach: discovery =>
+        append(builder, s"$base.checksum.discover.type", discovery.kind.value)
+        append(builder, s"$base.checksum.discover.url", discovery.url)
+        append(builder, s"$base.checksum.discover.file", discovery.file.getOrElse(""))
     download.archive.foreach: archive =>
       append(builder, s"$base.archive.type", archive.archiveType.value)
       appendMappings(builder, s"$base.archive.extract.files", archive.extract.files)
@@ -1005,7 +1014,8 @@ private final class ResolvingBinaryInstallerService(
                 s"wrote lock file: ${path.toAbsolutePath.normalize()}",
                 s"profile: ${prepared.profileName}",
                 s"manifest fingerprint: ${prepared.manifestFingerprint}",
-                s"tools: ${lockFile.tools.size}"
+                s"tools: ${lockFile.tools.size}",
+                s"checksums: ${LockFileChecksum.summary(lockFile.tools)}"
               ),
               0
             )
@@ -1079,12 +1089,19 @@ private final class ResolvingBinaryInstallerService(
     ))
 
   private def renderVersions(prepared: PreparedPlan): InstallerResult =
-    val references = versionReferences(prepared.profile)
-    val resolved   = prepared.plan.tools.map(tool => tool.name -> tool.version).toMap
-    val lines      = prepared.profile.spec.versions.toVector.sortBy(_._1).map:
+    val references        = versionReferences(prepared.profile)
+    val resolved          = prepared.plan.tools.map(tool => tool.name -> tool.version).toMap
+    val toolsByVersionRef = prepared.profile.spec.plan
+      .map(entry => entry.name -> entry.spec.versionRef)
+      .toMap
+    val lines = prepared.profile.spec.versions.toVector.sortBy(_._1).map:
       case (name, source) =>
-        val tools = references.getOrElse(name, Vector.empty)
-        renderVersionSource(name, source, resolved.get(name), tools)
+        val tools     = references.getOrElse(name, Vector.empty)
+        val checksums = checksumSummaryForTools(
+          tools,
+          prepared.plan.tools.filter(tool => toolsByVersionRef.get(tool.name).contains(name))
+        )
+        renderVersionSource(name, source, resolved.get(name), tools, checksums)
     InstallerResult(
       RenderSafety.displayLines("binstaller versions" +: lines, prepared.plan.redactions),
       0
@@ -1102,21 +1119,38 @@ private final class ResolvingBinaryInstallerService(
       name: String,
       source: VersionSource,
       resolved: Option[ResolvedVersion],
-      tools: Vector[String]
+      tools: Vector[String],
+      checksumSummary: String
   ): String =
     val toolList = if tools.isEmpty then "none" else tools.mkString(", ")
     source match
-      case VersionSource.Pinned(value) => s"pinned $name: $value (tools: $toolList)"
+      case VersionSource.Pinned(value) =>
+        s"pinned $name: $value (tools: $toolList; checksums: $checksumSummary)"
       case VersionSource.Dynamic(DynamicVersionKind.LatestUrl, note) =>
         val suffix = note.map(value => s" - $value").getOrElse("")
-        s"dynamic $name: dynamic latest-url (tools: $toolList)$suffix"
+        s"dynamic $name: dynamic latest-url (tools: $toolList; checksums: $checksumSummary)$suffix"
       case VersionSource.Resolver(VersionResolverKind.HttpText, url) =>
         val value      = resolved.map(ResolvedVersion.render).getOrElse("<unresolved>")
         val provenance = resolved.flatMap:
           case ResolvedVersion.Concrete(_, value)  => value
           case ResolvedVersion.DynamicLatestUrl(_) => None
         s"resolved $name: $value from $url${UrlProvenance.redirectSuffix(provenance)} " +
-          s"(tools: $toolList)"
+          s"(tools: $toolList; checksums: $checksumSummary)"
+
+  private def checksumSummaryForTools(
+      referencedNames: Vector[String],
+      tools: Vector[ResolvedTool]
+  ): String =
+    if referencedNames.isEmpty then "none"
+    else
+      val byName = tools.map(tool => tool.name -> tool).toMap
+      referencedNames.map: name =>
+        byName.get(name).flatMap(_.download.checksum) match
+          case Some(checksum) if ResolvedChecksum.isConfigured(checksum) => s"$name configured"
+          case Some(checksum) if ResolvedChecksum.isDiscovered(checksum) => s"$name discovered"
+          case Some(_)                                                   => s"$name configured"
+          case None                                                      => s"$name missing"
+      .mkString(", ")
 
   private def renderError(error: ResolvePlanError): InstallerResult =
     InstallerResult(ResolvePlanError.renderLines(error), 1)
@@ -1186,9 +1220,7 @@ private object LockFileBuilder:
       versionProvenance = versionProvenance,
       downloadProvenance = metadata.provenance,
       sizeBytes = metadata.sizeBytes,
-      checksum = tool.download.checksum.map(checksum =>
-        LockFileChecksum(checksum.algorithm.value, checksum.value)
-      ),
+      checksum = tool.download.checksum.map(LockFileChecksum.fromResolved),
       dynamicSource = dynamicSource
     )
 
@@ -1284,9 +1316,14 @@ private object PlanRenderer:
       s"concrete $value${UrlProvenance.redirectSuffix(provenance)}"
     case ResolvedVersion.DynamicLatestUrl(_) => "dynamic latest-url"
 
-  private def renderChecksum(checksum: Option[ChecksumSpec]): String = checksum match
-    case Some(value) => s"${value.algorithm.value} ${value.value}"
-    case None        => "not configured"
+  private def renderChecksum(checksum: Option[ResolvedChecksum]): String = checksum match
+    case Some(value) => s"${value.algorithm.value} ${value.value} (${checksumStatus(value)})"
+    case None        => "missing (not configured)"
+
+  private def checksumStatus(checksum: ResolvedChecksum): String = checksum.source match
+    case ResolvedChecksumSource.Configured                        => "configured"
+    case ResolvedChecksumSource.Discovered(url, file, provenance) =>
+      s"discovered from $url for $file" + UrlProvenance.redirectSuffix(Some(provenance))
 
   private def renderCreateDirectories(tool: ResolvedTool): Vector[String] =
     if tool.createDirectories.isEmpty then Vector.empty

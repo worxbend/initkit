@@ -2,7 +2,7 @@ package binstaller.core
 
 import binstaller.config.AllowSudoSymlinks
 import binstaller.config.ArchiveSpec
-import binstaller.config.ChecksumSpec
+import binstaller.config.ChecksumAlgorithm
 import binstaller.config.ConfigLoadError
 import binstaller.config.ConfigModule
 import binstaller.config.ExecutableMode
@@ -100,9 +100,39 @@ object ResolvedVersion:
 final case class ResolvedDownload(
     url: String,
     filename: String,
-    checksum: Option[ChecksumSpec],
+    checksum: Option[ResolvedChecksum],
     archive: Option[ResolvedArchive]
 )
+
+/** Resolved checksum value paired with its provenance for rendering, locking, and diagnostics. */
+final case class ResolvedChecksum(
+    algorithm: ChecksumAlgorithm,
+    value: String,
+    source: ResolvedChecksumSource
+)
+
+/** How a checksum entered the resolved plan. */
+enum ResolvedChecksumSource:
+  case Configured
+  case Discovered(url: String, file: String, provenance: UrlProvenance)
+
+/** Rendering helpers for resolved checksum provenance. */
+object ResolvedChecksum:
+
+  /** Whether the checksum came from an explicit manifest value. */
+  def isConfigured(checksum: ResolvedChecksum): Boolean = checksum.source ==
+    ResolvedChecksumSource.Configured
+
+  /** Whether the checksum was fetched from a typed discovery source. */
+  def isDiscovered(checksum: ResolvedChecksum): Boolean = checksum.source match
+    case ResolvedChecksumSource.Discovered(_, _, _) => true
+    case ResolvedChecksumSource.Configured          => false
+
+  /** Render the checksum source for user-facing diagnostics. */
+  def sourceDescription(checksum: ResolvedChecksum): String = checksum.source match
+    case ResolvedChecksumSource.Configured                        => "configured in manifest"
+    case ResolvedChecksumSource.Discovered(url, file, provenance) =>
+      s"discovered from $url for $file" + UrlProvenance.redirectSuffix(Some(provenance))
 
 /** Resolved archive mappings paired with the original archive declaration. */
 final case class ResolvedArchive(

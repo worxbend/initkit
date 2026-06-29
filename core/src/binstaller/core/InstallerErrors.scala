@@ -28,7 +28,7 @@ enum ToolInstallError:
       provenance: Option[UrlProvenance] = None
   )
 
-  case ChecksumMismatch(toolName: String, expected: String, actual: String)
+  case ChecksumMismatch(toolName: String, expected: String, actual: String, source: String)
   case StagingFailed(toolName: String, message: String)
   case ModeApplicationFailed(toolName: String, path: String, mode: String, message: String)
   case ReplacementFailed(toolName: String, message: String)
@@ -44,7 +44,7 @@ object ToolInstallError:
   /** Extract the tool name associated with an install failure. */
   def toolName(error: ToolInstallError): String = error match
     case ToolInstallError.DownloadFailed(toolName, _, _, _)         => toolName
-    case ToolInstallError.ChecksumMismatch(toolName, _, _)          => toolName
+    case ToolInstallError.ChecksumMismatch(toolName, _, _, _)       => toolName
     case ToolInstallError.StagingFailed(toolName, _)                => toolName
     case ToolInstallError.ModeApplicationFailed(toolName, _, _, _)  => toolName
     case ToolInstallError.ReplacementFailed(toolName, _)            => toolName
@@ -65,12 +65,13 @@ object ToolInstallError:
           redirectDetailPairs("download", provenance),
         redactions
       )
-    case ToolInstallError.ChecksumMismatch(toolName, expected, actual) => detailBlock(
+    case ToolInstallError.ChecksumMismatch(toolName, expected, actual, source) => detailBlock(
         s"checksum: sha256 expected $expected, got $actual",
         Vector(
           "tool"            -> toolName,
           "expected sha256" -> expected,
           "actual sha256"   -> actual,
+          "checksum source" -> source,
           "suggestion" -> "verify the downloaded artifact before updating the manifest checksum"
         ),
         redactions

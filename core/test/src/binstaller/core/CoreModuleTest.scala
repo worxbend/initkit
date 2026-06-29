@@ -1,7 +1,6 @@
 package binstaller.core
 
 import binstaller.config.ChecksumAlgorithm
-import binstaller.config.ChecksumSpec
 import binstaller.config.ConfigModule
 import binstaller.config.ExecutableMode
 import binstaller.config.ArchiveExtract
@@ -27,6 +26,7 @@ import java.net.http.WebSocket
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.time.Duration
 import java.util.Optional
 import java.util.concurrent.CompletableFuture
@@ -249,7 +249,11 @@ object CoreModuleTest extends TestSuite:
       Files.writeString(existingFile, "existing")
       val tool = directTool(
         installDir,
-        checksum = Some(ChecksumSpec(ChecksumAlgorithm.Sha256, "0" * 64))
+        checksum = Some(ResolvedChecksum(
+          ChecksumAlgorithm.Sha256,
+          "0" * 64,
+          ResolvedChecksumSource.Configured
+        ))
       )
       val installer = DirectBinaryInstaller(
         FakeBinaryDownloadClient.success("replacement".getBytes),
@@ -492,11 +496,11 @@ object CoreModuleTest extends TestSuite:
       assert(result.lines.exists(_.startsWith("pinned kustomize: v5.8.1")))
       assert(result.lines.exists(line =>
         line.startsWith("resolved kubectl: v1.34.0") &&
-          line.contains("(tools: kubectl)")
+          line.contains("(tools: kubectl; checksums: kubectl missing)")
       ))
       assert(result.lines.exists(line =>
         line.startsWith("dynamic minikube: dynamic latest-url") &&
-          line.contains("(tools: minikube)")
+          line.contains("(tools: minikube; checksums: minikube missing)")
       ))
 
     test("lock writes pinned http-text and dynamic source metadata without apply state"):
@@ -575,6 +579,108 @@ object CoreModuleTest extends TestSuite:
       assert(tools("gamma").dynamicSource)
       assert(!Files.exists(tempRoot.resolve("lock.state.json")))
       assert(!Files.exists(tempRoot.resolve("apps")))
+
+    test("discovered checksum succeeds and is visible in plan versions and lock output"):
+      val tempRoot        = Files.createTempDirectory("binstaller-core-checksum-discovered")
+      val artifactBytes   = "alpha-binary".getBytes(StandardCharsets.UTF_8)
+      val artifactHash    = sha256(artifactBytes)
+      val checksumFileUrl = "https://example.invalid/releases/1.0.0/SHA256SUMS"
+      val config          = writeConfig(tempRoot, checksumDiscoveryYaml(tempRoot, checksumFileUrl))
+      val lockPath        = tempRoot.resolve("checksum.lock.json")
+      val service         = BinaryInstallerService.resolving(
+        RoutingHttpTextClient(Map(
+          checksumFileUrl -> Right(HttpTextResponse(
+            s"$artifactHash  alpha-1.0.0.tar.gz\n",
+            UrlProvenance.direct(checksumFileUrl)
+          ))
+        )),
+        DirectBinaryInstaller(
+          RoutingBinaryDownloadClient(Map(
+            "https://example.invalid/releases/1.0.0/alpha-1.0.0.tar.gz" -> Right(artifactBytes)
+          )),
+          InstallFileSystem.nio
+        ),
+        ApplyStateStore.nio(tempRoot),
+        RoutingBinaryMetadataClient(Map(
+          "https://example.invalid/releases/1.0.0/alpha-1.0.0.tar.gz" -> BinaryMetadata(
+            Some(artifactBytes.length.toLong),
+            UrlProvenance.direct("https://example.invalid/releases/1.0.0/alpha-1.0.0.tar.gz")
+          )
+        )),
+        LockFileStore.nio
+      )
+
+      val planResult     = service.plan(applyOptions(config))
+      val versionsResult = service.versions(applyOptions(config))
+      val applyResult    = service.apply(applyOptions(config))
+      val lockResult     = service.lock(applyOptions(config), LockOptions(lockPath.toString))
+      val lock           = read[LockFile](Files.readString(lockPath))
+
+      assert(planResult.exitCode == 0)
+      assert(planResult.lines.exists(_.contains(s"checksum: sha256 $artifactHash (discovered")))
+      assert(planResult.lines.exists(_.contains(checksumFileUrl)))
+      assert(versionsResult.exitCode == 0)
+      assert(versionsResult.lines.exists(_.contains("checksums: alpha discovered")))
+      assert(applyResult.exitCode == 0)
+      assert(Files.readString(tempRoot.resolve("apps/alpha/bin/alpha")) == "alpha-binary")
+      assert(lockResult.exitCode == 0)
+      assert(lockResult.lines.exists(_.contains(
+        "checksums: configured 0, discovered 1, missing 0"
+      )))
+      assert(lock.tools.head.checksum.exists(checksum =>
+        checksum.source == "discovered" &&
+          checksum.discoveryUrl.contains(checksumFileUrl) &&
+          checksum.discoveryFile.contains("alpha-1.0.0.tar.gz")
+      ))
+
+    test("missing checksum file fails resolution with a typed diagnostic"):
+      val tempRoot        = Files.createTempDirectory("binstaller-core-checksum-missing-file")
+      val checksumFileUrl = "https://example.invalid/releases/1.0.0/SHA256SUMS"
+      val config          = writeConfig(tempRoot, checksumDiscoveryYaml(tempRoot, checksumFileUrl))
+      val service         = BinaryInstallerService.resolving(
+        RoutingHttpTextClient(Map(
+          checksumFileUrl -> Left(HttpTextError(checksumFileUrl, "HTTP 404"))
+        ))
+      )
+
+      val result = service.plan(applyOptions(config))
+
+      assert(result.exitCode == 1)
+      assert(result.lines.exists(_.contains("checksum discovery failed: HTTP 404")))
+      assert(result.lines.exists(_.contains("spec.plan[0].spec.download.checksum.discover.url")))
+
+    test("mismatched discovered checksum fails before replacement"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-checksum-discovered-mismatch")
+      val checksumFileUrl = "https://example.invalid/releases/1.0.0/SHA256SUMS"
+      val config          = writeConfig(tempRoot, checksumDiscoveryYaml(tempRoot, checksumFileUrl))
+      val existingFile    = tempRoot.resolve("apps/alpha/bin/alpha")
+      Files.createDirectories(existingFile.getParent)
+      Files.writeString(existingFile, "existing")
+      val service = BinaryInstallerService.resolving(
+        RoutingHttpTextClient(Map(
+          checksumFileUrl -> Right(HttpTextResponse(
+            s"${"0" * 64}  alpha-1.0.0.tar.gz\n",
+            UrlProvenance.direct(checksumFileUrl)
+          ))
+        )),
+        DirectBinaryInstaller(
+          RoutingBinaryDownloadClient(Map(
+            "https://example.invalid/releases/1.0.0/alpha-1.0.0.tar.gz" ->
+              Right("replacement".getBytes(StandardCharsets.UTF_8))
+          )),
+          InstallFileSystem.nio
+        ),
+        ApplyStateStore.nio(tempRoot)
+      )
+
+      val result = service.apply(applyOptions(config))
+      val output = result.lines.mkString("\n")
+
+      assert(result.exitCode == 1)
+      assert(output.contains("checksum: sha256 expected"))
+      assert(output.contains("checksum source: discovered"))
+      assert(output.contains(checksumFileUrl))
+      assert(Files.readString(existingFile) == "existing")
 
     test("locked dry-run validates lock and renders locked provenance without writes"):
       val tempRoot = Files.createTempDirectory("binstaller-core-locked-dry-run")
@@ -990,6 +1096,48 @@ object CoreModuleTest extends TestSuite:
       assert(!output.contains(secret))
       assert(!output.contains("\u001b"))
       assert(output.contains("<redacted>"))
+
+    test("checksum mismatch diagnostics redact discovered checksum source"):
+      val secret = "secret-token-value"
+      val plan   = ResolvedPlan(
+        ResolvedPolicy(
+          "/tmp/apps",
+          None,
+          AllowSudoSymlinks.Disabled,
+          RequireConfirmation.Disabled,
+          ContinueOnError.Disabled
+        ),
+        Vector(directTool(Path.of("/tmp/apps/alpha")).copy(download =
+          ResolvedDownload(
+            url = "https://example.invalid/alpha",
+            filename = "alpha",
+            checksum = Some(ResolvedChecksum(
+              ChecksumAlgorithm.Sha256,
+              "0" * 64,
+              ResolvedChecksumSource.Discovered(
+                s"https://example.invalid/$secret/SHA256SUMS",
+                "alpha",
+                UrlProvenance.direct(s"https://example.invalid/$secret/SHA256SUMS")
+              )
+            )),
+            archive = None
+          )
+        )),
+        SensitiveValueRedactions(Vector(secret))
+      )
+      val installer = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.success("replacement".getBytes(StandardCharsets.UTF_8)),
+        RecordingInstallFileSystem(stagedFiles = Vector("bin/alpha"))
+      )
+
+      val result = installer.installPlan(plan, ApplyConfirmation.Enabled)
+      val output = result.lines.mkString("\n")
+
+      assert(result.exitCode == 1)
+      assert(output.contains(
+        "checksum source: discovered from https://example.invalid/<redacted>/SHA256SUMS"
+      ))
+      assert(!output.contains(secret))
 
     test("apply output and state record redirected download provenance"):
       val tempRoot   = Files.createTempDirectory("binstaller-core-download-redirect-state")
@@ -1649,6 +1797,10 @@ object CoreModuleTest extends TestSuite:
       .asScala
       .exists(path => path.getFileName.toString.startsWith(s".$name.tmp-"))
 
+  private def sha256(bytes: Array[Byte]): String =
+    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+    digest.map(byte => f"${byte & 0xff}%02x").mkString
+
   private def exampleConfigPath: Path = repoRootCandidates
     .map(_.resolve("config.example.yaml"))
     .find(Files.exists(_))
@@ -1663,7 +1815,7 @@ object CoreModuleTest extends TestSuite:
 
   private def directTool(
       installDir: Path,
-      checksum: Option[ChecksumSpec] = None,
+      checksum: Option[ResolvedChecksum] = None,
       executables: Vector[ResolvedExecutable] = Vector(ResolvedExecutable("bin/alpha", None)),
       symlinks: Vector[ResolvedSymlink] = Vector.empty
   ): ResolvedTool = ResolvedTool(
@@ -2039,6 +2191,39 @@ object CoreModuleTest extends TestSuite:
        |          - path: bin/gamma
        |""".stripMargin
 
+  private def checksumDiscoveryYaml(tempRoot: Path, checksumFileUrl: String): String =
+    val appsDir = tempRoot.resolve("apps")
+    s"""
+       |apiVersion: binstaller.io/v1alpha1
+       |kind: BinaryDistributionProfile
+       |metadata:
+       |  name: checksum-discovery
+       |spec:
+       |  policy:
+       |    appsDir: "$appsDir"
+       |  vars: {}
+       |  versions:
+       |    alpha: "1.0.0"
+       |  plan:
+       |    - name: alpha
+       |      kind: binary-tool
+       |      spec:
+       |        versionRef: alpha
+       |        installDir: "$appsDir/alpha"
+       |        createDirectories:
+       |          - bin
+       |        download:
+       |          url: https://example.invalid/releases/$${version}/alpha-$${version}.tar.gz
+       |          filename: alpha-$${version}.tar.gz
+       |          checksum:
+       |            algorithm: sha256
+       |            discover:
+       |              type: sha256sum
+       |              url: $checksumFileUrl
+       |        executables:
+       |          - path: bin/alpha
+       |""".stripMargin
+
   private val kubectlResolverYaml: String =
     """
       |apiVersion: binstaller.io/v1alpha1
@@ -2335,6 +2520,15 @@ private final class FakeHttpTextClient(text: String) extends HttpTextClient:
   def getText(url: String): Either[HttpTextError, String] =
     if url == "https://dl.k8s.io/release/stable.txt" then Right(text)
     else Left(HttpTextError(url, s"unexpected URL $url"))
+
+private final class RoutingHttpTextClient(
+    responses: Map[String, Either[HttpTextError, HttpTextResponse]]
+) extends HttpTextClient:
+
+  def getText(url: String): Either[HttpTextError, String] = getTextWithProvenance(url).map(_.text)
+
+  override def getTextWithProvenance(url: String): Either[HttpTextError, HttpTextResponse] =
+    responses.getOrElse(url, Left(HttpTextError(url, s"unexpected URL $url")))
 
 private final class LockHttpTextClient(text: String, provenance: UrlProvenance)
     extends HttpTextClient:

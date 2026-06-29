@@ -13,6 +13,8 @@ import binstaller.core.InstallerResult
 import binstaller.core.InstallerRunStatus
 import binstaller.core.ResolvedArchive
 import binstaller.core.ResolvedDownload
+import binstaller.core.ResolvedChecksum
+import binstaller.core.ResolvedChecksumSource
 import binstaller.core.ResolvedExtractMapping
 import binstaller.core.ResolvedPlanSnapshot
 import binstaller.core.ResolvedSymlink
@@ -444,16 +446,22 @@ object PlanningTuiModel:
     else Vector.empty
 
   private def checksumState(download: ResolvedDownload): String = download.checksum match
-    case Some(value) => value.algorithm.value
-    case None        => "missing"
+    case Some(value) if ResolvedChecksum.isDiscovered(value) => s"${value.algorithm.value}*"
+    case Some(value)                                         => value.algorithm.value
+    case None                                                => "missing"
 
   private def checksumDetail(download: ResolvedDownload): String = download.checksum match
-    case Some(value) => s"${value.algorithm.value} ${value.value}"
-    case None        => "not configured"
+    case Some(value) => s"${value.algorithm.value} ${value.value} (${checksumStatus(value)})"
+    case None        => "missing (not configured)"
 
   private def checksumOperation(download: ResolvedDownload): String = download.checksum match
     case Some(value) => s"verify ${value.algorithm.value} checksum ${value.value}"
     case None        => "skip checksum verification because none is configured"
+
+  private def checksumStatus(checksum: ResolvedChecksum): String = checksum.source match
+    case ResolvedChecksumSource.Configured                        => "configured"
+    case ResolvedChecksumSource.Discovered(url, file, provenance) =>
+      s"discovered from $url for $file" + UrlProvenance.redirectSuffix(Some(provenance))
 
   private def absoluteOrInstallPath(installDir: String, path: String): String =
     if path.startsWith("/") then path else joinPath(installDir, path)

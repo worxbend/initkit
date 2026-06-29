@@ -216,6 +216,28 @@ object ConfigModuleTest extends TestSuite:
         )
       ))
 
+    test("checksum discovery source is typed and mutually exclusive with literal value"):
+      val profile = ConfigModule.loadString(checksumDiscoveryYaml) match
+        case Right(value) => value
+        case Left(error)  => abort(s"expected checksum discovery config, got $error")
+      val checksum = checksumFor(profile, "alpha").getOrElse(abort("missing checksum"))
+
+      assert(checksum.algorithm == ChecksumAlgorithm.Sha256)
+      assert(checksum.value.isEmpty)
+      assert(checksum.discover.contains(ChecksumDiscoverySpec(
+        ChecksumDiscoveryKind.Sha256Sum,
+        "https://example.invalid/releases/${version}/SHA256SUMS",
+        Some("alpha-${version}.tar.gz")
+      )))
+
+    test("checksum discovery rejects ambiguous checksum declarations"):
+      val errors = validationErrors(ambiguousChecksumYaml)
+
+      assert(errors.contains(ValidationError(
+        "spec.plan[0].spec.download.checksum",
+        "checksum must declare either value or discover, not both"
+      )))
+
   private def validationErrors(yaml: String): Vector[ValidationError] =
     ConfigModule.loadString(yaml) match
       case Left(ConfigLoadError.ValidationFailed(errors)) => errors
@@ -369,6 +391,68 @@ object ConfigModuleTest extends TestSuite:
                                               |        executables:
                                               |          - path: bin/alpha
                                               |""".stripMargin
+
+  private val checksumDiscoveryYaml: String =
+    """
+      |apiVersion: binstaller.io/v1alpha1
+      |kind: BinaryDistributionProfile
+      |metadata:
+      |  name: checksum-discovery
+      |spec:
+      |  policy:
+      |    appsDir: "${HOME}/.apps"
+      |  vars: {}
+      |  versions:
+      |    alpha: "1.0.0"
+      |  plan:
+      |    - name: alpha
+      |      kind: binary-tool
+      |      spec:
+      |        versionRef: alpha
+      |        installDir: "${appsDir}/alpha"
+      |        download:
+      |          url: https://example.invalid/releases/${version}/alpha-${version}.tar.gz
+      |          filename: alpha-${version}.tar.gz
+      |          checksum:
+      |            algorithm: sha256
+      |            discover:
+      |              type: sha256sum
+      |              url: https://example.invalid/releases/${version}/SHA256SUMS
+      |              file: alpha-${version}.tar.gz
+      |        executables:
+      |          - path: bin/alpha
+      |""".stripMargin
+
+  private val ambiguousChecksumYaml: String =
+    s"""
+       |apiVersion: binstaller.io/v1alpha1
+       |kind: BinaryDistributionProfile
+       |metadata:
+       |  name: ambiguous-checksum
+       |spec:
+       |  policy:
+       |    appsDir: "$${HOME}/.apps"
+       |  vars: {}
+       |  versions:
+       |    alpha: "1.0.0"
+       |  plan:
+       |    - name: alpha
+       |      kind: binary-tool
+       |      spec:
+       |        versionRef: alpha
+       |        installDir: "$${appsDir}/alpha"
+       |        download:
+       |          url: https://example.invalid/alpha
+       |          filename: alpha
+       |          checksum:
+       |            algorithm: sha256
+       |            value: ${"a" * 64}
+       |            discover:
+       |              type: sha256sum
+       |              url: https://example.invalid/SHA256SUMS
+       |        executables:
+       |          - path: bin/alpha
+       |""".stripMargin
 
   private val duplicateNamesYaml: String = """
                                              |apiVersion: binstaller.io/v1alpha1

@@ -157,12 +157,34 @@ final case class DownloadSpec(
     archive: Option[ArchiveSpec]
 )
 
-/** Declared checksum value. Current validation supports SHA-256 only. */
-final case class ChecksumSpec(algorithm: ChecksumAlgorithm, value: String)
+/** Declared checksum value or typed discovery source. Current validation supports SHA-256 only. */
+final case class ChecksumSpec(
+    algorithm: ChecksumAlgorithm,
+    value: Option[String],
+    discover: Option[ChecksumDiscoverySpec]
+)
+
+/** Backward-compatible constructors for literal checksum declarations. */
+object ChecksumSpec:
+
+  /** Build a literal checksum declaration. */
+  def apply(algorithm: ChecksumAlgorithm, value: String): ChecksumSpec =
+    ChecksumSpec(algorithm, Some(value), None)
 
 /** Supported checksum algorithms. */
 enum ChecksumAlgorithm(val value: String):
   case Sha256 extends ChecksumAlgorithm("sha256")
+
+/** Typed checksum discovery source that reads a published checksum file. */
+final case class ChecksumDiscoverySpec(
+    kind: ChecksumDiscoveryKind,
+    url: String,
+    file: Option[String]
+)
+
+/** Supported published checksum file formats. */
+enum ChecksumDiscoveryKind(val value: String):
+  case Sha256Sum extends ChecksumDiscoveryKind("sha256sum")
 
 /** Archive extraction specification for downloaded artifacts. */
 final case class ArchiveSpec(archiveType: ArchiveType, extract: ArchiveExtract)
@@ -536,12 +558,51 @@ private object ManifestDecoder:
           ChecksumAlgorithm.Sha256,
           _.value
         )
-        val checksum    = requiredString(checksumMap.value, s"$path.value")
-        val valueErrors = checksumValueErrors(algorithm.value, checksum.value, s"$path.value")
-        DecodeResult(
-          Some(ChecksumSpec(algorithm.value, checksum.value)),
-          checksumMap.errors ++ algorithm.errors ++ checksum.errors ++ valueErrors
+        val checksum = optionalString(checksumMap.value, "value", s"$path.value")
+        val discover = optionalChecksumDiscovery(
+          checksumMap.value,
+          s"$path.discover"
         )
+        val shapeErrors = checksumShapeErrors(path, checksum.value, discover.value)
+        val valueErrors = checksum.value.toVector.flatMap(value =>
+          checksumValueErrors(algorithm.value, value, s"$path.value")
+        )
+        DecodeResult(
+          Some(ChecksumSpec(algorithm.value, checksum.value, discover.value)),
+          checksumMap.errors ++ algorithm.errors ++ checksum.errors ++ discover.errors ++
+            shapeErrors ++ valueErrors
+        )
+
+  private def optionalChecksumDiscovery(
+      map: YamlMap,
+      path: String
+  ): DecodeResult[Option[ChecksumDiscoverySpec]] = map.get("discover") match
+    case None        => DecodeResult.valid(None)
+    case Some(value) =>
+      val sourceMap = asMap(value, path)
+      val kind      = enumValue(
+        requiredString(sourceMap.value, s"$path.type"),
+        s"$path.type",
+        ChecksumDiscoveryKind.values.toVector,
+        ChecksumDiscoveryKind.Sha256Sum,
+        _.value
+      )
+      val url  = requiredString(sourceMap.value, s"$path.url")
+      val file = optionalString(sourceMap.value, "file", s"$path.file")
+      DecodeResult(
+        Some(ChecksumDiscoverySpec(kind.value, url.value, file.value)),
+        sourceMap.errors ++ kind.errors ++ url.errors ++ file.errors
+      )
+
+  private def checksumShapeErrors(
+      path: String,
+      value: Option[String],
+      discover: Option[ChecksumDiscoverySpec]
+  ): Vector[ValidationError] = (value, discover) match
+    case (Some(_), Some(_)) =>
+      Vector(ValidationError(path, "checksum must declare either value or discover, not both"))
+    case (None, None) => Vector(ValidationError(path, "checksum must declare value or discover"))
+    case _            => Vector.empty
 
   private def checksumValueErrors(
       algorithm: ChecksumAlgorithm,
