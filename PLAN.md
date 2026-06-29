@@ -95,6 +95,14 @@ as part of this refactor.
   `ApplyConfirmation.Enabled`, and preserves the existing option fields for
   state, reset-state, lock validation, and other core gates. Focused core,
   CLI, TUI, compile, scalafmt, JSON, and whitespace checks passed.
+- 2026-06-30: Validation iteration 32 passed the T009 broad checkpoint after
+  T006-T008 internal TUI actions: focused tests, recursive compile/test,
+  scalafmt, Mill resolution, first-class `tui` help/config smokes, static
+  plan/apply/version/lock smokes, and `git diff --check`. No code
+  fixes were needed. The static `tui --config config.example.yaml` smoke
+  rendered a frame and clear non-interactive message. Local blockers remain
+  environment-bound: `native-image` is not on `PATH`, and stdin is not a live
+  TTY in this agent shell.
 
 ## Product Target
 
