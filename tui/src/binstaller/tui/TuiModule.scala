@@ -306,7 +306,7 @@ object PlanningTuiModel:
       modal = state.modal,
       footer = footerText(state.snapshot, visibleEntries.map(_.tool)),
       keybar =
-        "p plan | tab focus | enter details | l logs | space toggle | a/c/i select/clear/invert | / filter | ? help | q quit"
+        "p plan | d dry-run | tab focus | enter details | l logs | space toggle | a/c/i select | / filter | ? help | q quit"
     )
 
   /** Filter TUI plan entries by name or description using a case-insensitive contains match. */
@@ -1430,6 +1430,7 @@ object PlanningTuiRenderer:
     ),
     fit("Enter focuses selected entry details; l focuses logs.", width),
     fit("p previews the selected entries without installing or writing state.", width),
+    fit("d runs dry-run apply for selected entries and keeps the final summary visible.", width),
     fit("Details/log focus: arrows, PageUp/PageDown, Home/End, and mouse wheel scroll.", width),
     fit("/ edits the filter, Enter applies it, Escape cancels editing or closes modals.", width),
     fit("q or Ctrl+C exits after restoring the terminal.", width),

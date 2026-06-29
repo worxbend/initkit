@@ -2,6 +2,9 @@ package binstaller.tui
 
 import binstaller.core.InstallerResult
 import binstaller.core.BinaryInstallerService
+import binstaller.core.DryRunMode
+import binstaller.core.InstallerEvent
+import binstaller.core.InstallerEventObserver
 import binstaller.core.InstallerOptions
 import binstaller.core.ResolvedPlanSnapshot
 import binstaller.core.ResolvedTool
@@ -82,6 +85,9 @@ trait TuiAppActions:
   /** Render a plan preview for the current TUI selection and return the next app state. */
   def planPreview(state: TuiAppState): TuiAppState
 
+  /** Run apply in dry-run mode for the current TUI selection and return the next app state. */
+  def dryRunApply(state: TuiAppState): TuiAppState
+
 /** Constructors for TUI action boundaries. */
 object TuiAppActions:
 
@@ -89,18 +95,15 @@ object TuiAppActions:
   val none: TuiAppActions = new TuiAppActions:
     def planPreview(state: TuiAppState): TuiAppState = state
 
+    def dryRunApply(state: TuiAppState): TuiAppState = state
+
   /** Build action handlers that call core services only after converting TUI-local selection. */
   def fromService(options: InstallerOptions, service: BinaryInstallerService): TuiAppActions =
     new TuiAppActions:
       def planPreview(state: TuiAppState): TuiAppState =
         val selectedEntries = state.entries.filter(entry => state.selection.contains(entry.name))
         if selectedEntries.isEmpty then
-          state.copy(modal =
-            Some(TuiModal.Message(
-              "Selection required",
-              Vector("Select at least one plan entry before running a plan preview.")
-            ))
-          )
+          state.withNoSelectionModal("plan preview")
         else
           val selection      = TuiCoreSelection.toToolSelection(state.selection, state.entries)
           val previewOptions = options.copy(selection = selection)
@@ -116,6 +119,40 @@ object TuiAppActions:
             mode = TuiBrowsingMode.PlanPreview,
             logs = nextLogs,
             logScroll = 0,
+            modal = nextModal
+          )
+
+      def dryRunApply(state: TuiAppState): TuiAppState =
+        val selectedEntries = state.entries.filter(entry => state.selection.contains(entry.name))
+        if selectedEntries.isEmpty then state.withNoSelectionModal("dry run")
+        else
+          val selection     = TuiCoreSelection.toToolSelection(state.selection, state.entries)
+          val dryRunOptions = options.copy(selection = selection, dryRun = DryRunMode.Enabled)
+          val request       = TuiRequest(TuiMode.Apply, dryRunOptions, Some("tui dry-run"))
+          val settings      = ExecutionTuiSettings(
+            viewport = state.viewport,
+            appVersion = state.header.appVersion,
+            hostSummary = state.header.hostSummary,
+            spinnerFrame = 0,
+            logs = state.logs
+          )
+          val observer       = CollectingTuiAppExecutionObserver(request, settings)
+          val result         = service.applyWithEvents(dryRunOptions, observer)
+          val executionState = observer.state.withResult(result)
+          val selectedText   = s"dry-run selected ${selectedEntries.size} / ${state.totalCount}: " +
+            selectedEntries.map(_.name).mkString(", ")
+          val nextLogs  = (state.logs :+ selectedText).takeRight(120)
+          val nextModal =
+            if result.exitCode == 0 then state.modal
+            else Some(TuiModal.Message("Dry run failed", result.lines.take(8)))
+          state.copy(
+            mode = TuiBrowsingMode.DryRun,
+            logs = nextLogs,
+            logScroll = 0,
+            executionState = Some(executionState.copy(logs =
+              (executionState.logs :+ selectedText)
+                .takeRight(80)
+            )),
             modal = nextModal
           )
 
@@ -211,6 +248,14 @@ final case class TuiAppState(
   /** Return a state with a new TUI-local selection and refreshed header counts. */
   def withSelection(value: TuiSelection): TuiAppState = copy(selection = value).refreshHeader
 
+  /** Open the shared no-selection modal for an action shortcut. */
+  def withNoSelectionModal(actionName: String): TuiAppState = copy(modal =
+    Some(TuiModal.Message(
+      "Selection required",
+      Vector(s"Select at least one plan entry before running $actionName.")
+    ))
+  )
+
 /** Constructors for the pure TUI application state. */
 object TuiAppState:
 
@@ -269,6 +314,7 @@ object TuiAppController:
   def handle(state: TuiAppState, input: TuiInput, actions: TuiAppActions): TuiAppState =
     if state.exitRequested then state
     else if state.filter.editing then handleFilterInput(state, input)
+    else if state.executionState.nonEmpty then handleExecutionInput(state, input)
     else handleBrowsingInput(state, input, actions)
 
   /** Clamp scroll offsets and selected row to the current viewport and filter. */
@@ -310,6 +356,7 @@ object TuiAppController:
     case TuiInput.Character('c') => clearVisible(state)
     case TuiInput.Character('i') => invertVisible(state)
     case TuiInput.Character('p') => actions.planPreview(state)
+    case TuiInput.Character('d') => actions.dryRunApply(state)
     case TuiInput.Slash          =>
       state.copy(filter = state.filter.copy(draft = Some(state.filter.value.getOrElse(""))))
     case TuiInput.Question              => toggleHelp(state)
@@ -319,6 +366,15 @@ object TuiAppController:
     case TuiInput.MouseWheelUp          => scrollFocused(state, -1)
     case TuiInput.MouseWheelDown        => scrollFocused(state, 1)
     case TuiInput.Character(_) | TuiInput.Backspace | TuiInput.Unknown => state
+
+  private def handleExecutionInput(state: TuiAppState, input: TuiInput): TuiAppState = input match
+    case TuiInput.Resize(value) => state.copy(
+        viewport = value,
+        executionState = state.executionState.map(_.handle(input))
+      )
+    case TuiInput.Escape                => state.copy(modal = None)
+    case TuiInput.Quit | TuiInput.CtrlC => state.copy(exitRequested = true)
+    case _                              => state
 
   private def handleDirectional(state: TuiAppState, delta: Int): TuiAppState = state.focus match
     case TuiPane.Plan => state.copy(
@@ -448,9 +504,27 @@ object TuiAppRunner:
     try
       terminal.open()
       while !state.exitRequested do
-        terminal.render(PlanningTuiRenderer.render(PlanningTuiModel.fromAppState(state)))
+        terminal.render(TuiAppRenderer.render(state))
         terminal.readInput() match
           case Some(input) => state = TuiAppController.handle(state, input, actions)
           case None        => state = state.copy(exitRequested = true)
       InstallerResult(Vector.empty, 0)
     finally terminal.close()
+
+/** Render the currently primary TUI app view. */
+object TuiAppRenderer:
+
+  /** Render execution as the primary view while an action is active or complete. */
+  def render(state: TuiAppState): Vector[String] = state.executionState match
+    case Some(execution) => ExecutionTuiRenderer.render(execution.toModel)
+    case None            => PlanningTuiRenderer.render(PlanningTuiModel.fromAppState(state))
+
+private final class CollectingTuiAppExecutionObserver(
+    request: TuiRequest,
+    settings: ExecutionTuiSettings
+) extends InstallerEventObserver:
+  private var currentState: ExecutionTuiState = ExecutionTuiState.initial(request, settings)
+
+  def state: ExecutionTuiState = currentState
+
+  def onEvent(event: InstallerEvent): Unit = currentState = currentState.onEvent(event)

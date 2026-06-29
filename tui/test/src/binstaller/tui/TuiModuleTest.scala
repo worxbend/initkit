@@ -361,6 +361,97 @@ object TuiModuleTest extends TestSuite:
       assert(finalState.appState.logs.contains("preview ok"))
       assert(finalState.appState.mode == TuiBrowsingMode.PlanPreview)
 
+    test("d runs dry-run apply only for selected entries in the execution view without writes"):
+      val fixture         = writeFixture()
+      val dryRunStateFile = fixture.root.resolve("dry-run.state.json")
+      val options         = fixture.options.copy(statePath = Some(dryRunStateFile.toString))
+      val service         = BinaryInstallerService.resolving(FakeHttpTextClient(""))
+      val actions         = TuiAppActions.fromService(options, service)
+      val selected        = PlanningTuiSession.run(
+        sessionState(fixture.copy(options = options)),
+        Vector(TuiInput.Character('c'), TuiInput.Down, TuiInput.Character(' '))
+      )
+      val finalState = PlanningTuiSession.run(selected, Vector(TuiInput.Character('d')), actions)
+      val rendered   = stripAnsi(TuiAppRenderer.render(finalState.appState).mkString("\n"))
+
+      assert(finalState.appState.mode == TuiBrowsingMode.DryRun)
+      assert(finalState.appState.executionState.exists(_.summary.nonEmpty))
+      assert(rendered.contains("mode apply execution"))
+      assert(rendered.contains("Dry-run operations"))
+      assert(rendered.contains("Recent Logs"))
+      assert(rendered.contains("binstaller apply --dry-run"))
+      assert(rendered.contains("tools: 1"))
+      assert(rendered.contains("1. beta"))
+      assert(!rendered.contains("1. alpha"))
+      assert(rendered.contains("dry-run selected 1 / 2: beta"))
+      assert(rendered.contains("succeeded | installed 0 | failed 0 | skipped 0 | exit 0"))
+      assert(!rendered.contains("Plan ["))
+      assert(!Files.exists(fixture.appsDir))
+      assert(!Files.exists(dryRunStateFile))
+      assert(!Files.exists(fixture.appsDir.resolve("beta")))
+      assert(!Files.exists(fixture.appsDir.resolve("beta").resolve("beta")))
+      assert(!Files.exists(fixture.appsDir.resolve("beta").resolve("bin").resolve("beta")))
+
+    test("d with no selected entries opens a visible modal and does not call apply"):
+      val fixture = writeFixture()
+      val service = RecordingPlanService(InstallerResult(Vector("should not render"), 0))
+      val actions = TuiAppActions.fromService(fixture.options, service)
+      val cleared = PlanningTuiSession.run(
+        sessionState(fixture),
+        Vector(TuiInput.Character('c'))
+      )
+      val finalState = PlanningTuiSession.run(cleared, Vector(TuiInput.Character('d')), actions)
+      val plain      = stripAnsi(PlanningTuiRenderer.render(finalState.toModel).mkString("\n"))
+
+      assert(service.planOptions.isEmpty)
+      assert(service.applyOptions.isEmpty)
+      assert(finalState.appState.executionState.isEmpty)
+      assert(finalState.appState.modal.exists:
+        case TuiModal.Message("Selection required", lines) =>
+          lines.exists(_.contains("at least one plan entry"))
+        case _ => false)
+      assert(plain.contains("Selection required"))
+      assert(plain.contains("Select at least one plan entry"))
+
+    test("d converts selected TUI entries to core ToolSelection at the apply boundary"):
+      val fixture  = writeFixture()
+      val service  = RecordingDryRunService(InstallerResult(Vector("dry-run ok"), 0))
+      val actions  = TuiAppActions.fromService(fixture.options, service)
+      val selected = PlanningTuiSession.run(
+        sessionState(fixture),
+        Vector(TuiInput.Character('c'), TuiInput.Down, TuiInput.Character(' '))
+      )
+      val finalState = PlanningTuiSession.run(selected, Vector(TuiInput.Character('d')), actions)
+
+      assert(service.planOptions.isEmpty)
+      assert(service.applyOptions.map(options => options.selection -> options.dryRun) ==
+        Vector(ToolSelection(only = Vector("beta"), skip = Vector.empty) -> DryRunMode.Enabled))
+      assert(finalState.appState.mode == TuiBrowsingMode.DryRun)
+      assert(finalState.appState.executionState.exists(_.dryRunLines.contains("dry-run ok")))
+
+    test("interactive d action replaces the planning frame with execution output"):
+      val fixture  = writeFixture()
+      val terminal = FakeTuiTerminal(
+        interactive = true,
+        TuiViewport(100, 38),
+        inputs = Vector(TuiInput.Character('d'), TuiInput.Quit)
+      )
+      val result = TuiModule.startInteractive(
+        TuiRequest(TuiMode.Plan, fixture.options),
+        FakeHttpTextClient(""),
+        testSettings(height = 38),
+        terminal
+      )
+      val first  = stripAnsi(terminal.rendered.head.mkString("\n"))
+      val second = stripAnsi(terminal.rendered(1).mkString("\n"))
+
+      assert(result.exitCode == 0)
+      assert(first.contains("Plan [focus]"))
+      assert(second.contains("mode apply execution"))
+      assert(second.contains("Dry-run operations"))
+      assert(!second.contains("Plan [focus]"))
+      assert(!Files.exists(fixture.appsDir))
+
     test("row selection highlights the active entry and updates details"):
       val fixture = writeFixture()
       val model   = modelFor(fixture, selectedIndex = 1)
@@ -967,6 +1058,40 @@ private final class RecordingPlanService(result: InstallerResult) extends Binary
   ): InstallerResult =
     applyOptions = applyOptions :+ options
     InstallerResult(Vector("unexpected apply"), 99)
+
+  def versions(options: InstallerOptions): InstallerResult = InstallerResult(Vector.empty, 0)
+
+  def lock(options: InstallerOptions, lockOptions: LockOptions): InstallerResult =
+    InstallerResult(Vector.empty, 0)
+
+private final class RecordingDryRunService(result: InstallerResult) extends BinaryInstallerService:
+  var planOptions: Vector[InstallerOptions]  = Vector.empty
+  var applyOptions: Vector[InstallerOptions] = Vector.empty
+
+  def planWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult =
+    planOptions = planOptions :+ options
+    InstallerResult(Vector("unexpected plan"), 98)
+
+  def applyWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult =
+    applyOptions = applyOptions :+ options
+    eventObserver.onEvent(InstallerEvent.ResolvingStarted(options.configPath, Duration.ZERO))
+    eventObserver.onEvent(InstallerEvent.PlanReady(1, options.statePath, Duration.ofMillis(1)))
+    eventObserver.onEvent(InstallerEvent.Summary(
+      InstallerRunStatus.Succeeded,
+      installed = 0,
+      failed = 0,
+      skipped = 0,
+      exitCode = result.exitCode,
+      stateFilePath = options.statePath,
+      elapsedTime = Duration.ofMillis(2)
+    ))
+    result
 
   def versions(options: InstallerOptions): InstallerResult = InstallerResult(Vector.empty, 0)
 

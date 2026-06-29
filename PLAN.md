@@ -78,6 +78,15 @@ as part of this refactor.
   no-selection modal, and preserves filter/focus/details/selection state. The
   focused checks `core.test`, `tui.test`, recursive compile, scalafmt check,
   JSON validation, and `git diff --check` passed.
+- 2026-06-30: T007 wired the internal `d` action for selected-entry dry-run
+  apply. The TUI now converts selected entries to core `ToolSelection`, runs
+  `applyWithEvents` with `DryRunMode.Enabled`, stores the completed
+  `ExecutionTuiState`, renders execution as the primary view after `d`, keeps
+  recent logs and the final summary visible, and opens the shared
+  no-selection modal without calling apply when nothing is selected. The
+  focused checks `core.test`, `tui.test`, `app.run tui --config
+  config.example.yaml`, recursive compile, scalafmt check, JSON validation,
+  and `git diff --check` passed.
 
 ## Product Target
 
@@ -524,7 +533,7 @@ The authoritative resumable implementation queue is stored in
 | T004 | feature | moderate | Complete browsing controls |
 | T005 | validation | simple | Checkpoint command browsing |
 | T006 | feature | moderate | Wire selected plan action |
-| T007 | feature | complex | Wire selected dry run |
+| T007 | feature | complex | Wire selected dry run (completed 2026-06-30) |
 | T008 | feature | complex | Wire confirmed apply |
 | T009 | validation | simple | Checkpoint TUI actions |
 | T010 | feature | complex | Implement error modals |
