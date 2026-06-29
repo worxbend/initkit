@@ -117,6 +117,9 @@ trait BinaryInstallerService:
   /** Resolve and render the configured version sources. */
   def versions(options: InstallerOptions): InstallerResult
 
+  /** Resolve and write a reproducible lock file without applying tools. */
+  def lock(options: InstallerOptions, lockOptions: LockOptions): InstallerResult
+
 /** Constructors for production and test service implementations. */
 object BinaryInstallerService:
   /** Minimal placeholder used by early wiring tests. */
@@ -134,7 +137,9 @@ object BinaryInstallerService:
     httpTextClient,
     ResolutionOptions.fromEnvironment(),
     installer,
-    ApplyStateStore.cwd
+    ApplyStateStore.cwd,
+    BinaryMetadataClient.jdk,
+    LockFileStore.nio
   )
 
   /** Create a resolving service with injectable installer and state storage boundaries. */
@@ -146,7 +151,25 @@ object BinaryInstallerService:
     httpTextClient,
     ResolutionOptions.fromEnvironment(),
     installer,
-    stateStore
+    stateStore,
+    BinaryMetadataClient.jdk,
+    LockFileStore.nio
+  )
+
+  /** Create a resolving service with injectable installer, state, and lock metadata boundaries. */
+  def resolving(
+      httpTextClient: HttpTextClient,
+      installer: DirectBinaryInstaller,
+      stateStore: ApplyStateStore,
+      metadataClient: BinaryMetadataClient,
+      lockFileStore: LockFileStore
+  ): BinaryInstallerService = ResolvingBinaryInstallerService(
+    httpTextClient,
+    ResolutionOptions.fromEnvironment(),
+    installer,
+    stateStore,
+    metadataClient,
+    lockFileStore
   )
 
 private final case class ObservedInstallResults(
@@ -746,7 +769,7 @@ private object StatefulApplyRunner:
     val withoutCurrent = tools.filterNot(_.name == updated.name)
     withoutCurrent :+ updated
 
-private object ManifestFingerprint:
+private[core] object ManifestFingerprint:
 
   def profile(profile: BinaryDistributionProfile): String =
     Sha256.digest(canonicalProfile(profile).getBytes(StandardCharsets.UTF_8))
@@ -882,6 +905,9 @@ private object PlaceholderBinaryInstallerService extends BinaryInstallerService:
 
   def versions(options: InstallerOptions): InstallerResult = placeholderResult("versions", options)
 
+  def lock(options: InstallerOptions, lockOptions: LockOptions): InstallerResult =
+    InstallerResult(Vector(s"binstaller lock placeholder for ${options.configPath}"), 0)
+
   private def placeholderResult(command: String, options: InstallerOptions): InstallerResult =
     InstallerResult(
       Vector(s"binstaller $command placeholder for ${options.configPath}"),
@@ -892,7 +918,9 @@ private final class ResolvingBinaryInstallerService(
     httpTextClient: HttpTextClient,
     resolutionOptions: ResolutionOptions,
     installer: DirectBinaryInstaller,
-    stateStore: ApplyStateStore
+    stateStore: ApplyStateStore,
+    metadataClient: BinaryMetadataClient,
+    lockFileStore: LockFileStore
 ) extends BinaryInstallerService:
 
   def planWithEvents(
@@ -936,6 +964,24 @@ private final class ResolvingBinaryInstallerService(
 
   def versions(options: InstallerOptions): InstallerResult =
     resolveFromOptions(options).fold(renderError, renderVersions)
+
+  def lock(options: InstallerOptions, lockOptions: LockOptions): InstallerResult =
+    resolveSelectedPreparedPlan(options) match
+      case Left(error)     => renderError(error)
+      case Right(prepared) =>
+        val lockFile = LockFileBuilder.build(prepared, metadataClient)
+        val path     = Path.of(lockOptions.outputPath)
+        lockFileStore.save(path, lockFile) match
+          case Right(()) => InstallerResult(
+              Vector(
+                s"wrote lock file: ${path.toAbsolutePath.normalize()}",
+                s"profile: ${prepared.profileName}",
+                s"manifest fingerprint: ${prepared.manifestFingerprint}",
+                s"tools: ${lockFile.tools.size}"
+              ),
+              0
+            )
+          case Left(error) => InstallerResult(Vector(LockFileError.render(error)), 1)
 
   private def renderSelectedPlanWithEvents(
       options: InstallerOptions,
@@ -1070,6 +1116,44 @@ private object ToolSelector:
       else tools.filter(tool => onlyNames(tool.name))
 
     included.filterNot(tool => skipNames(tool.name))
+
+private object LockFileBuilder:
+
+  def build(
+      prepared: PreparedPlan,
+      metadataClient: BinaryMetadataClient
+  ): LockFile = LockFile(
+    LockFile.schemaVersion,
+    prepared.profileName,
+    prepared.manifestFingerprint,
+    prepared.plan.tools.map(tool => toolEntry(tool, metadataClient))
+  )
+
+  private def toolEntry(
+      tool: ResolvedTool,
+      metadataClient: BinaryMetadataClient
+  ): LockFileTool =
+    val metadata = metadataClient
+      .metadata(tool.download.url)
+      .getOrElse(BinaryMetadata(None, UrlProvenance.direct(tool.download.url)))
+    val (resolvedVersion, versionProvenance, dynamicSource) = versionFields(tool.version)
+    LockFileTool(
+      name = tool.name,
+      resolvedVersion = resolvedVersion,
+      versionProvenance = versionProvenance,
+      downloadProvenance = metadata.provenance,
+      sizeBytes = metadata.sizeBytes,
+      checksum = tool.download.checksum.map(checksum =>
+        LockFileChecksum(checksum.algorithm.value, checksum.value)
+      ),
+      dynamicSource = dynamicSource
+    )
+
+  private def versionFields(
+      version: ResolvedVersion
+  ): (Option[String], Option[UrlProvenance], Boolean) = version match
+    case ResolvedVersion.Concrete(value, provenance) => (Some(value), provenance, false)
+    case ResolvedVersion.DynamicLatestUrl(_)         => (None, None, true)
 
 private enum PlanRenderCommand:
   case Plan, ApplyDryRun

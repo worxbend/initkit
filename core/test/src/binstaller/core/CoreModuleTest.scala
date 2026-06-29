@@ -40,6 +40,7 @@ import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSession
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
+import upickle.default.read
 
 object CoreModuleTest extends TestSuite:
 
@@ -463,6 +464,83 @@ object CoreModuleTest extends TestSuite:
         line.startsWith("dynamic minikube: dynamic latest-url") &&
           line.contains("(tools: minikube)")
       ))
+
+    test("lock writes pinned http-text and dynamic source metadata without apply state"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-lock")
+      val config   = writeConfig(tempRoot, lockYaml(tempRoot))
+      val lockPath = tempRoot.resolve("resolved.lock.json")
+      val service  = BinaryInstallerService.resolving(
+        LockHttpTextClient(
+          "2.0.0",
+          UrlProvenance(
+            "https://example.invalid/beta-version",
+            "https://cdn.example.invalid/beta-version",
+            Vector(UrlRedirectHop(
+              "https://example.invalid/beta-version",
+              "https://cdn.example.invalid/beta-version",
+              302
+            ))
+          )
+        ),
+        DirectBinaryInstaller(
+          FakeBinaryDownloadClient.failure("lock must not download"),
+          InstallFileSystem.nio
+        ),
+        ApplyStateStore.nio(tempRoot),
+        RoutingBinaryMetadataClient(Map(
+          "https://example.invalid/alpha-1.0.0" -> BinaryMetadata(
+            Some(11L),
+            UrlProvenance.direct("https://example.invalid/alpha-1.0.0")
+          ),
+          "https://example.invalid/beta-2.0.0" -> BinaryMetadata(
+            Some(22L),
+            UrlProvenance(
+              "https://example.invalid/beta-2.0.0",
+              "https://cdn.example.invalid/beta-2.0.0",
+              Vector(UrlRedirectHop(
+                "https://example.invalid/beta-2.0.0",
+                "https://cdn.example.invalid/beta-2.0.0",
+                301
+              ))
+            )
+          ),
+          "https://example.invalid/latest/gamma" -> BinaryMetadata(
+            None,
+            UrlProvenance.direct("https://example.invalid/latest/gamma")
+          )
+        )),
+        LockFileStore.nio
+      )
+
+      val result = service.lock(applyOptions(config), LockOptions(lockPath.toString))
+      val lock   = read[LockFile](Files.readString(lockPath))
+      val tools  = lock.tools.map(tool => tool.name -> tool).toMap
+
+      assert(result.exitCode == 0)
+      assert(result.lines.exists(_.contains("wrote lock file")))
+      assert(lock.schemaVersion == LockFile.schemaVersion)
+      assert(lock.profileName == "lock-profile")
+      assert(lock.manifestFingerprint.nonEmpty)
+      assert(lock.tools.map(_.name) == Vector("alpha", "beta", "gamma"))
+      assert(tools("alpha").resolvedVersion.contains("1.0.0"))
+      assert(tools("alpha").versionProvenance.isEmpty)
+      assert(tools("alpha").downloadProvenance.finalUrl == "https://example.invalid/alpha-1.0.0")
+      assert(tools("alpha").sizeBytes.contains(11L))
+      assert(tools("alpha").checksum.contains(LockFileChecksum("sha256", "a" * 64)))
+      assert(!tools("alpha").dynamicSource)
+      assert(tools("beta").resolvedVersion.contains("2.0.0"))
+      assert(tools("beta").versionProvenance.exists(_.finalUrl ==
+        "https://cdn.example.invalid/beta-version"))
+      assert(tools("beta").downloadProvenance.finalUrl == "https://cdn.example.invalid/beta-2.0.0")
+      assert(tools("beta").sizeBytes.contains(22L))
+      assert(!tools("beta").dynamicSource)
+      assert(tools("gamma").resolvedVersion.isEmpty)
+      assert(tools("gamma").versionProvenance.isEmpty)
+      assert(tools("gamma").sizeBytes.isEmpty)
+      assert(tools("gamma").checksum.isEmpty)
+      assert(tools("gamma").dynamicSource)
+      assert(!Files.exists(tempRoot.resolve("lock.state.json")))
+      assert(!Files.exists(tempRoot.resolve("apps")))
 
     test("non dry-run apply requires yes when policy requireConfirmation is true"):
       val tempRoot   = Files.createTempDirectory("binstaller-core-confirm")
@@ -1629,6 +1707,64 @@ object CoreModuleTest extends TestSuite:
       |            target: "${installDir}/bin/alpha"
       |""".stripMargin
 
+  private def lockYaml(tempRoot: Path): String =
+    val appsDir = tempRoot.resolve("apps")
+    s"""
+       |apiVersion: binstaller.io/v1alpha1
+       |kind: BinaryDistributionProfile
+       |metadata:
+       |  name: lock-profile
+       |spec:
+       |  policy:
+       |    appsDir: "$appsDir"
+       |    stateFile: lock.state.json
+       |  vars: {}
+       |  versions:
+       |    alpha: "1.0.0"
+       |    beta:
+       |      resolver:
+       |        type: http-text
+       |        url: https://example.invalid/beta-version
+       |    gamma:
+       |      dynamic:
+       |        type: latest-url
+       |        note: latest endpoint
+       |  plan:
+       |    - name: alpha
+       |      kind: binary-tool
+       |      spec:
+       |        versionRef: alpha
+       |        installDir: "$appsDir/alpha"
+       |        download:
+       |          url: https://example.invalid/alpha-$${version}
+       |          filename: alpha
+       |          checksum:
+       |            algorithm: sha256
+       |            value: ${"a" * 64}
+       |        executables:
+       |          - path: bin/alpha
+       |    - name: beta
+       |      kind: binary-tool
+       |      spec:
+       |        versionRef: beta
+       |        installDir: "$appsDir/beta"
+       |        download:
+       |          url: https://example.invalid/beta-$${version}
+       |          filename: beta
+       |        executables:
+       |          - path: bin/beta
+       |    - name: gamma
+       |      kind: binary-tool
+       |      spec:
+       |        versionRef: gamma
+       |        installDir: "$appsDir/gamma"
+       |        download:
+       |          url: https://example.invalid/latest/gamma
+       |          filename: gamma
+       |        executables:
+       |          - path: bin/gamma
+       |""".stripMargin
+
   private val kubectlResolverYaml: String =
     """
       |apiVersion: binstaller.io/v1alpha1
@@ -1890,6 +2026,15 @@ private final class FakeHttpTextClient(text: String) extends HttpTextClient:
     if url == "https://dl.k8s.io/release/stable.txt" then Right(text)
     else Left(HttpTextError(url, s"unexpected URL $url"))
 
+private final class LockHttpTextClient(text: String, provenance: UrlProvenance)
+    extends HttpTextClient:
+
+  def getText(url: String): Either[HttpTextError, String] = getTextWithProvenance(url).map(_.text)
+
+  override def getTextWithProvenance(url: String): Either[HttpTextError, HttpTextResponse] =
+    if url == provenance.initialUrl then Right(HttpTextResponse(text, provenance))
+    else Left(HttpTextError(url, s"unexpected URL $url"))
+
 private final class FakeBinaryDownloadClient(result: Either[BinaryDownloadError, Array[Byte]])
     extends BinaryDownloadClient:
 
@@ -1962,6 +2107,13 @@ private object RoutingBinaryDownloadClient:
     "https://example.invalid/alpha" -> Right("alpha".getBytes(StandardCharsets.UTF_8)),
     "https://example.invalid/beta"  -> Right("beta".getBytes(StandardCharsets.UTF_8))
   ))
+
+private final class RoutingBinaryMetadataClient(results: Map[String, BinaryMetadata])
+    extends BinaryMetadataClient:
+
+  def metadata(url: String): Either[BinaryMetadataError, BinaryMetadata] = results
+    .get(url)
+    .toRight(BinaryMetadataError(url, s"unexpected URL $url"))
 
 private final class RecordingInstallerEventObserver extends InstallerEventObserver:
 

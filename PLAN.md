@@ -363,6 +363,15 @@ kind: BinaryDistributionProfile
   were required. Remaining risk is limited to live raw-terminal behavior, which
   still needs the documented manual smoke workflow outside this non-interactive
   agent shell.
+- 2026-06-29: T011 added `binstaller lock`. The command writes
+  `binstaller.lock.json` by default or `--output FILE`, ties the JSON to the
+  profile name and manifest fingerprint, and records per-tool resolved version
+  data, resolver provenance, download provenance, content length when available,
+  checksum metadata, and dynamic-source status. The lock path is independent of
+  apply state, and lock resolution does not install tools or write state. Core
+  and CLI tests cover pinned, `http-text`, and dynamic sources; the app-level
+  `lock --config config.example.yaml` smoke passed and its generated lock file
+  was removed after validation.
 
 ## Current Agent Loop State
 
@@ -377,6 +386,8 @@ is:
 - Direct downloads, archive extraction, checksums, symlinks, state/resume,
   root-cause error rendering, colored CLI progress, and colored CLI summaries
   are implemented.
+- `binstaller lock` can persist resolved metadata for the current manifest, but
+  `apply --locked` enforcement is still pending in T012.
 - Installer scripts are intentionally unsupported. Any `installer:` block should
   fail manifest validation and suggest direct binary or archive download.
 - The remaining command execution boundaries are structured and narrow: sudo
@@ -400,7 +411,7 @@ is:
 
 The resumable implementation queue is stored in `.agent-loop/tasks.json`.
 The next loop continues after the completed TUI/readiness milestone and
-prioritizes remaining production hardening before new lock/provenance features:
+  prioritizes remaining production hardening and lock/policy follow-up work:
 
 | Task | Type | Complexity | Title |
 | --- | --- | --- | --- |
@@ -2003,7 +2014,7 @@ Manual smoke after first working executor:
 
 ## Later Enhancements
 
-- Lock file with resolved versions, URLs, sizes, and checksums.
+- Locked apply enforcement using resolved versions, URLs, sizes, and checksums.
 - Checksum auto-discovery for upstreams that publish checksum files.
 - Strict policy mode that rejects dynamic URLs, missing checksums, HTTP URLs,
   parent env inheritance, and sudo symlinks unless explicitly overridden.

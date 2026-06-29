@@ -10,6 +10,7 @@ import binstaller.core.InstallerOptions
 import binstaller.core.InstallerResult
 import binstaller.core.InstallerRunStatus
 import binstaller.core.ApplyConfirmation
+import binstaller.core.LockOptions
 import binstaller.core.ResetState
 import binstaller.core.RenderSafety
 import binstaller.core.ToolSelection
@@ -63,6 +64,10 @@ object CliModule:
     commandLine.addSubcommand(
       "versions",
       subcommandLine(VersionsCommand(root, service, out, err), out, err)
+    )
+    commandLine.addSubcommand(
+      "lock",
+      subcommandLine(LockCommand(root, service, out, err), out, err)
     )
     commandLine
 
@@ -446,3 +451,28 @@ private final class VersionsCommand(
     err: PrintWriter
 ) extends ConfiguredCommand(root, out, err):
   override def call(): Integer = execute(service.versions)
+
+@Command(
+  name = "lock",
+  mixinStandardHelpOptions = true,
+  description = Array("Resolve and write a JSON lock file without installing tools.")
+)
+private final class LockCommand(
+    root: BinstallerCommand,
+    service: BinaryInstallerService,
+    out: PrintWriter,
+    err: PrintWriter
+) extends SelectableCommand(root, out, err):
+  private var outputPath: String = "binstaller.lock.json"
+
+  @CliOption(
+    names = Array("--output"),
+    paramLabel = "FILE",
+    description = Array("Path to the JSON lock file to write.")
+  )
+  def setOutputPath(value: String): Unit = outputPath = value
+
+  override def call(): Integer = executeWithOptions(
+    _.copy(selection = selection, dryRun = DryRunMode.Enabled),
+    options => service.lock(options, LockOptions(outputPath))
+  )

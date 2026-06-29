@@ -13,6 +13,7 @@ import binstaller.core.InstallFileSystem
 import binstaller.core.InstallerEventObserver
 import binstaller.core.InstallerOptions
 import binstaller.core.InstallerResult
+import binstaller.core.LockOptions
 import binstaller.core.ResetState
 import binstaller.core.ApplyStateStore
 import binstaller.core.UrlProvenance
@@ -43,6 +44,7 @@ object CliModuleTest extends TestSuite:
       assert(result.out.contains("plan"))
       assert(result.out.contains("apply"))
       assert(result.out.contains("versions"))
+      assert(result.out.contains("lock"))
 
     test("help omits out-of-scope first-class commands"):
       val result = runCli(Vector("--help"))
@@ -86,6 +88,12 @@ object CliModuleTest extends TestSuite:
       assert(result.exitCode != 0)
       assert(result.err.trim == "Missing required option: --config")
 
+    test("lock requires config"):
+      val result = runCli(Vector("lock"))
+
+      assert(result.exitCode != 0)
+      assert(result.err.trim == "Missing required option: --config")
+
     test("apply forwards state override and reset-state"):
       val service = RecordingInstallerService()
       val result  = runCli(
@@ -103,6 +111,26 @@ object CliModuleTest extends TestSuite:
       assert(result.exitCode == 0)
       assert(service.applyOptions.exists(_.statePath.contains("custom.state.json")))
       assert(service.applyOptions.exists(_.resetState == ResetState.Enabled))
+
+    test("lock forwards output path and selection"):
+      val service = RecordingInstallerService()
+      val result  = runCli(
+        Vector(
+          "lock",
+          "--config",
+          "profile.yaml",
+          "--output",
+          "custom.lock.json",
+          "--only",
+          "alpha"
+        ),
+        service
+      )
+
+      assert(result.exitCode == 0)
+      assert(result.out.contains("lock"))
+      assert(service.lockOptions.exists(_.outputPath == "custom.lock.json"))
+      assert(service.lockInstallerOptions.exists(_.selection.only == Vector("alpha")))
 
     test("plan tui is explicit and does not call plan service"):
       val service = RecordingInstallerService()
@@ -426,12 +454,18 @@ private final class ProgressBinaryDownloadClient(bytes: Array[Byte]) extends Bin
 
 private final class RecordingInstallerService extends BinaryInstallerService:
 
-  private var recordedPlanOptions: Option[InstallerOptions]  = None
-  private var recordedApplyOptions: Option[InstallerOptions] = None
+  private var recordedPlanOptions: Option[InstallerOptions]   = None
+  private var recordedApplyOptions: Option[InstallerOptions]  = None
+  private var recordedLockOptions: Option[LockOptions]        = None
+  private var recordedLockInstaller: Option[InstallerOptions] = None
 
   def planOptions: Option[InstallerOptions] = recordedPlanOptions
 
   def applyOptions: Option[InstallerOptions] = recordedApplyOptions
+
+  def lockOptions: Option[LockOptions] = recordedLockOptions
+
+  def lockInstallerOptions: Option[InstallerOptions] = recordedLockInstaller
 
   def planWithEvents(
       options: InstallerOptions,
@@ -448,3 +482,8 @@ private final class RecordingInstallerService extends BinaryInstallerService:
     InstallerResult(Vector("apply"), 0)
 
   def versions(options: InstallerOptions): InstallerResult = InstallerResult(Vector("versions"), 0)
+
+  def lock(options: InstallerOptions, lockOptions: LockOptions): InstallerResult =
+    recordedLockInstaller = Some(options)
+    recordedLockOptions = Some(lockOptions)
+    InstallerResult(Vector("lock"), 0)
