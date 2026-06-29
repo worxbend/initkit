@@ -1,14 +1,18 @@
 package binstaller.tui
 
 import binstaller.config.ChecksumAlgorithm
+import binstaller.core.BinaryInstallerService
 import binstaller.core.DownloadProgressStatus
 import binstaller.core.DryRunMode
 import binstaller.core.HttpTextClient
 import binstaller.core.HttpTextError
 import binstaller.core.InstallerEvent
+import binstaller.core.InstallerEventObserver
 import binstaller.core.InstallerPhase
 import binstaller.core.InstallerRunStatus
 import binstaller.core.InstallerOptions
+import binstaller.core.InstallerResult
+import binstaller.core.LockOptions
 import binstaller.core.ResetState
 import binstaller.core.ResolutionOptions
 import binstaller.core.ResolvedPlanSnapshot
@@ -284,6 +288,78 @@ object TuiModuleTest extends TestSuite:
 
       assert(tuiSelection.selectedToolNames == Set("beta"))
       assert(coreSelection == ToolSelection(only = Vector("beta"), skip = Vector.empty))
+
+    test("p previews only selected entries and preserves browsing state without writes"):
+      val fixture          = writeFixture()
+      val previewStateFile = fixture.root.resolve("preview.state.json")
+      val options          = fixture.options.copy(statePath = Some(previewStateFile.toString))
+      val service          = BinaryInstallerService.resolving(FakeHttpTextClient(""))
+      val actions          = TuiAppActions.fromService(options, service)
+      val browsedState     = PlanningTuiSession.run(
+        sessionState(fixture.copy(options = options)),
+        Vector(
+          TuiInput.Character('c'),
+          TuiInput.Slash,
+          TuiInput.Character('b'),
+          TuiInput.Character('e'),
+          TuiInput.Enter,
+          TuiInput.Character(' '),
+          TuiInput.Enter
+        )
+      )
+      val previewState =
+        PlanningTuiSession.run(browsedState, Vector(TuiInput.Character('p')), actions)
+      val model = previewState.toModel
+      val logs  = stripAnsi(model.logs.mkString("\n"))
+
+      assert(previewState.appState.mode == TuiBrowsingMode.PlanPreview)
+      assert(previewState.focusedPane == TuiPane.Details)
+      assert(model.detail.exists(_.name == "beta"))
+      assert(model.header.filterText == "be")
+      assert(previewState.appState.selectedToolNames == Set("beta"))
+      assert(logs.contains("plan preview selected 1 / 2: beta"))
+      assert(logs.contains("binstaller plan (dry-run)"))
+      assert(logs.contains("tools: 1"))
+      assert(logs.contains("1. beta"))
+      assert(!logs.contains("1. alpha"))
+      assert(!Files.exists(fixture.appsDir))
+      assert(!Files.exists(previewStateFile))
+
+    test("p with no selected entries opens a visible modal and does not call plan"):
+      val fixture = writeFixture()
+      val service = RecordingPlanService(InstallerResult(Vector("should not render"), 0))
+      val actions = TuiAppActions.fromService(fixture.options, service)
+      val cleared = PlanningTuiSession.run(
+        sessionState(fixture),
+        Vector(TuiInput.Character('c'))
+      )
+      val finalState = PlanningTuiSession.run(cleared, Vector(TuiInput.Character('p')), actions)
+      val plain      = stripAnsi(PlanningTuiRenderer.render(finalState.toModel).mkString("\n"))
+
+      assert(service.planOptions.isEmpty)
+      assert(service.applyOptions.isEmpty)
+      assert(finalState.appState.modal.exists:
+        case TuiModal.Message("Selection required", lines) =>
+          lines.exists(_.contains("at least one plan entry"))
+        case _ => false)
+      assert(plain.contains("Selection required"))
+      assert(plain.contains("Select at least one plan entry"))
+
+    test("p converts selected TUI entries to core ToolSelection at the plan boundary"):
+      val fixture  = writeFixture()
+      val service  = RecordingPlanService(InstallerResult(Vector("preview ok"), 0))
+      val actions  = TuiAppActions.fromService(fixture.options, service)
+      val selected = PlanningTuiSession.run(
+        sessionState(fixture),
+        Vector(TuiInput.Character('c'), TuiInput.Down, TuiInput.Character(' '))
+      )
+      val finalState = PlanningTuiSession.run(selected, Vector(TuiInput.Character('p')), actions)
+
+      assert(service.planOptions.map(_.selection) ==
+        Vector(ToolSelection(only = Vector("beta"), skip = Vector.empty)))
+      assert(service.applyOptions.isEmpty)
+      assert(finalState.appState.logs.contains("preview ok"))
+      assert(finalState.appState.mode == TuiBrowsingMode.PlanPreview)
 
     test("row selection highlights the active entry and updates details"):
       val fixture = writeFixture()
@@ -873,6 +949,29 @@ private final case class TuiFixture(
 private final class FakeHttpTextClient(text: String) extends HttpTextClient:
 
   def getText(url: String): Either[HttpTextError, String] = Right(text)
+
+private final class RecordingPlanService(result: InstallerResult) extends BinaryInstallerService:
+  var planOptions: Vector[InstallerOptions]  = Vector.empty
+  var applyOptions: Vector[InstallerOptions] = Vector.empty
+
+  def planWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult =
+    planOptions = planOptions :+ options
+    result
+
+  def applyWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult =
+    applyOptions = applyOptions :+ options
+    InstallerResult(Vector("unexpected apply"), 99)
+
+  def versions(options: InstallerOptions): InstallerResult = InstallerResult(Vector.empty, 0)
+
+  def lock(options: InstallerOptions, lockOptions: LockOptions): InstallerResult =
+    InstallerResult(Vector.empty, 0)
 
 private final class FakeTuiTerminal(
     interactive: Boolean,

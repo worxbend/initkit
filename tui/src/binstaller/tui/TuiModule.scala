@@ -100,7 +100,11 @@ object TuiModule:
       )
     case Right(snapshot) =>
       val initial = PlanningTuiState.initial(snapshot, settings)
-      if terminal.isInteractive then PlanningTuiSession.run(initial, terminal)
+      val actions = TuiAppActions.fromService(
+        request.options,
+        BinaryInstallerService.resolving(httpTextClient)
+      )
+      if terminal.isInteractive then PlanningTuiSession.run(initial, terminal, actions)
       else
         val lines = PlanningTuiRenderer.render(initial.toModel) :+
           "non-interactive terminal detected; rendered a static TUI frame"
@@ -241,6 +245,7 @@ final case class PlanningTuiModel(
     logs: Vector[String],
     logScroll: Int,
     helpOpen: Boolean,
+    modal: Option[TuiModal],
     footer: String,
     keybar: String
 )
@@ -298,9 +303,10 @@ object PlanningTuiModel:
       logs = state.logs,
       logScroll = clampScroll(state.logScroll, logs.size, layout.logBodyHeight),
       helpOpen = state.helpOpen,
+      modal = state.modal,
       footer = footerText(state.snapshot, visibleEntries.map(_.tool)),
       keybar =
-        "tab focus | enter details | l logs | space toggle | a/c/i select/clear/invert | / filter | ? help | q quit"
+        "p plan | tab focus | enter details | l logs | space toggle | a/c/i select/clear/invert | / filter | ? help | q quit"
     )
 
   /** Filter TUI plan entries by name or description using a case-insensitive contains match. */
@@ -1051,9 +1057,23 @@ object PlanningTuiSession:
   def run(initial: PlanningTuiState, inputs: Vector[TuiInput]): PlanningTuiState =
     PlanningTuiState(TuiAppRunner.run(initial.appState, inputs))
 
+  /** Run a deterministic input sequence with side-effecting TUI actions. */
+  def run(
+      initial: PlanningTuiState,
+      inputs: Vector[TuiInput],
+      actions: TuiAppActions
+  ): PlanningTuiState = PlanningTuiState(TuiAppRunner.run(initial.appState, inputs, actions))
+
   /** Run against a terminal boundary, restoring terminal state on exit or failure. */
   def run(initial: PlanningTuiState, terminal: TuiTerminal): InstallerResult =
     TuiAppRunner.run(initial.appState, terminal)
+
+  /** Run against a terminal boundary with side-effecting TUI actions. */
+  def run(
+      initial: PlanningTuiState,
+      terminal: TuiTerminal,
+      actions: TuiAppActions
+  ): InstallerResult = TuiAppRunner.run(initial.appState, terminal, actions)
 
 /** Terminal boundary used by the interactive TUI session. */
 trait TuiTerminal:
@@ -1306,7 +1326,7 @@ object PlanningTuiRenderer:
         model.focusedPane == TuiPane.Details
       ) ++
       logs(model.logs, model.logScroll, layout, width, model.focusedPane == TuiPane.Logs) ++
-      help(model.helpOpen, width) ++
+      modal(model.modal, width) ++
       footer(model, width)
 
   private def header(model: PlanningTuiModel, width: Int): Vector[String] =
@@ -1390,23 +1410,31 @@ object PlanningTuiRenderer:
     scrollBody(lines, offset, layout.logBodyHeight, width) ++
     Vector(separator(width))
 
-  private def help(open: Boolean, width: Int): Vector[String] =
-    if !open then Vector.empty
-    else
-      Vector(
+  private def modal(value: Option[TuiModal], width: Int): Vector[String] = value match
+    case None                                 => Vector.empty
+    case Some(TuiModal.Help)                  => help(width)
+    case Some(TuiModal.Message(title, lines)) => Vector(
         separator(width),
-        PlanningTuiStatus.style(PlanningTuiStatus.Active, fit("Help", width)),
-        fit("Tab cycles plan, details, and logs; Shift+Tab or b cycles backward.", width),
-        fit(
-          "Plan focus: Up/Down selects rows, PageUp/PageDown jumps, Home/End moves to edges.",
-          width
-        ),
-        fit("Enter focuses selected entry details; l focuses logs.", width),
-        fit("Details/log focus: arrows, PageUp/PageDown, Home/End, and mouse wheel scroll.", width),
-        fit("/ edits the filter, Enter applies it, Escape cancels editing or closes help.", width),
-        fit("q or Ctrl+C exits after restoring the terminal.", width),
-        separator(width)
-      )
+        PlanningTuiStatus.style(PlanningTuiStatus.Active, fit(title, width))
+      ) ++
+        lines.map(fit(_, width)) ++
+        Vector(separator(width))
+
+  private def help(width: Int): Vector[String] = Vector(
+    separator(width),
+    PlanningTuiStatus.style(PlanningTuiStatus.Active, fit("Help", width)),
+    fit("Tab cycles plan, details, and logs; Shift+Tab or b cycles backward.", width),
+    fit(
+      "Plan focus: Up/Down selects rows, PageUp/PageDown jumps, Home/End moves to edges.",
+      width
+    ),
+    fit("Enter focuses selected entry details; l focuses logs.", width),
+    fit("p previews the selected entries without installing or writing state.", width),
+    fit("Details/log focus: arrows, PageUp/PageDown, Home/End, and mouse wheel scroll.", width),
+    fit("/ edits the filter, Enter applies it, Escape cancels editing or closes modals.", width),
+    fit("q or Ctrl+C exits after restoring the terminal.", width),
+    separator(width)
+  )
 
   private def footer(model: PlanningTuiModel, width: Int): Vector[String] =
     val legend = PlanningTuiStatus.legendOrder

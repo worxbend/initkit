@@ -72,6 +72,12 @@ as part of this refactor.
   rendered a frame and clear non-interactive message. Local blockers remain
   environment-bound: `native-image` is not on `PATH`, and stdin is not a live
   TTY in this agent shell.
+- 2026-06-30: T006 wired the internal `p` action for selected-entry plan
+  preview. The TUI now converts its local selection to core `ToolSelection` at
+  the action boundary, appends selected plan output to logs, opens a visible
+  no-selection modal, and preserves filter/focus/details/selection state. The
+  focused checks `core.test`, `tui.test`, recursive compile, scalafmt check,
+  JSON validation, and `git diff --check` passed.
 
 ## Product Target
 

@@ -1,6 +1,8 @@
 package binstaller.tui
 
 import binstaller.core.InstallerResult
+import binstaller.core.BinaryInstallerService
+import binstaller.core.InstallerOptions
 import binstaller.core.ResolvedPlanSnapshot
 import binstaller.core.ResolvedTool
 import binstaller.core.ToolSelection
@@ -73,6 +75,49 @@ object TuiCoreSelection:
     only = entries.filter(entry => selection.contains(entry.name)).map(_.name),
     skip = Vector.empty
   )
+
+/** Side-effecting actions available from the otherwise pure TUI state controller. */
+trait TuiAppActions:
+
+  /** Render a plan preview for the current TUI selection and return the next app state. */
+  def planPreview(state: TuiAppState): TuiAppState
+
+/** Constructors for TUI action boundaries. */
+object TuiAppActions:
+
+  /** No-op action set used by pure browsing tests and compatibility helpers. */
+  val none: TuiAppActions = new TuiAppActions:
+    def planPreview(state: TuiAppState): TuiAppState = state
+
+  /** Build action handlers that call core services only after converting TUI-local selection. */
+  def fromService(options: InstallerOptions, service: BinaryInstallerService): TuiAppActions =
+    new TuiAppActions:
+      def planPreview(state: TuiAppState): TuiAppState =
+        val selectedEntries = state.entries.filter(entry => state.selection.contains(entry.name))
+        if selectedEntries.isEmpty then
+          state.copy(modal =
+            Some(TuiModal.Message(
+              "Selection required",
+              Vector("Select at least one plan entry before running a plan preview.")
+            ))
+          )
+        else
+          val selection      = TuiCoreSelection.toToolSelection(state.selection, state.entries)
+          val previewOptions = options.copy(selection = selection)
+          val result         = service.plan(previewOptions)
+          val selectedText   =
+            s"plan preview selected ${selectedEntries.size} / ${state.totalCount}: " +
+              selectedEntries.map(_.name).mkString(", ")
+          val nextLogs  = (state.logs ++ (Vector(selectedText) ++ result.lines)).takeRight(120)
+          val nextModal =
+            if result.exitCode == 0 then state.modal
+            else Some(TuiModal.Message("Plan preview failed", result.lines.take(8)))
+          state.copy(
+            mode = TuiBrowsingMode.PlanPreview,
+            logs = nextLogs,
+            logScroll = 0,
+            modal = nextModal
+          )
 
 /** Header fields that remain visible while browsing or executing actions in the TUI. */
 final case class TuiAppHeader(
@@ -218,9 +263,13 @@ object TuiAppController:
 
   /** Handle one parsed input event and return the next immutable TUI app state. */
   def handle(state: TuiAppState, input: TuiInput): TuiAppState =
+    handle(state, input, TuiAppActions.none)
+
+  /** Handle one parsed input event, invoking action boundaries for command shortcuts. */
+  def handle(state: TuiAppState, input: TuiInput, actions: TuiAppActions): TuiAppState =
     if state.exitRequested then state
     else if state.filter.editing then handleFilterInput(state, input)
-    else handleBrowsingInput(state, input)
+    else handleBrowsingInput(state, input, actions)
 
   /** Clamp scroll offsets and selected row to the current viewport and filter. */
   def clamp(state: TuiAppState): TuiAppState = clampScrolls(clampSelection(state))
@@ -238,7 +287,11 @@ object TuiAppController:
     case TuiInput.Resize(value) => clampScrolls(state.copy(viewport = value))
     case _                      => state
 
-  private def handleBrowsingInput(state: TuiAppState, input: TuiInput): TuiAppState = input match
+  private def handleBrowsingInput(
+      state: TuiAppState,
+      input: TuiInput,
+      actions: TuiAppActions
+  ): TuiAppState = input match
     case TuiInput.Tab            => state.copy(focus = state.focus.next)
     case TuiInput.BackTab        => state.copy(focus = state.focus.previous)
     case TuiInput.Character('b') => state.copy(focus = state.focus.previous)
@@ -256,6 +309,7 @@ object TuiAppController:
     case TuiInput.Character('a') => selectVisible(state)
     case TuiInput.Character('c') => clearVisible(state)
     case TuiInput.Character('i') => invertVisible(state)
+    case TuiInput.Character('p') => actions.planPreview(state)
     case TuiInput.Slash          =>
       state.copy(filter = state.filter.copy(draft = Some(state.filter.value.getOrElse(""))))
     case TuiInput.Question              => toggleHelp(state)
@@ -376,15 +430,27 @@ object TuiAppRunner:
     (state, input) =>
       if state.exitRequested then state else TuiAppController.handle(state, input)
 
+  /** Run a deterministic input sequence with side-effecting TUI actions. */
+  def run(
+      initial: TuiAppState,
+      inputs: Vector[TuiInput],
+      actions: TuiAppActions
+  ): TuiAppState = inputs.foldLeft(initial): (state, input) =>
+    if state.exitRequested then state else TuiAppController.handle(state, input, actions)
+
   /** Run the app state against a terminal boundary, restoring terminal state on exit or failure. */
   def run(initial: TuiAppState, terminal: TuiTerminal): InstallerResult =
-    var state = TuiAppController.handle(initial, TuiInput.Resize(terminal.viewport))
+    run(initial, terminal, TuiAppActions.none)
+
+  /** Run the app state against a terminal boundary with side-effecting TUI actions. */
+  def run(initial: TuiAppState, terminal: TuiTerminal, actions: TuiAppActions): InstallerResult =
+    var state = TuiAppController.handle(initial, TuiInput.Resize(terminal.viewport), actions)
     try
       terminal.open()
       while !state.exitRequested do
         terminal.render(PlanningTuiRenderer.render(PlanningTuiModel.fromAppState(state)))
         terminal.readInput() match
-          case Some(input) => state = TuiAppController.handle(state, input)
+          case Some(input) => state = TuiAppController.handle(state, input, actions)
           case None        => state = state.copy(exitRequested = true)
       InstallerResult(Vector.empty, 0)
     finally terminal.close()
