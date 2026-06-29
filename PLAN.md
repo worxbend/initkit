@@ -113,6 +113,12 @@ kind: BinaryDistributionProfile
   dry-run apply enforces `policy.requireConfirmation` via `--yes`; and
   `policy.continueOnError` controls whether apply stops after the first failed
   tool.
+- 2026-06-29: VALIDATION-17 checkpoint passed after state/resume and reporting
+  work. Config, core, CLI, recursive compile, recursive tests, scalafmt, git
+  whitespace, and app-level `--help`, `plan`, `apply --dry-run`, and `versions`
+  smokes against `config.example.yaml` all completed successfully with no source
+  fixes required. Remaining risk is in later release/documentation wiring,
+  hardening review findings, and the known installer-script atomicity limitation.
 
 ### User Experience Goals
 
