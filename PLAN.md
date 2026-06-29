@@ -190,6 +190,14 @@ kind: BinaryDistributionProfile
   details, logs, footer status, and keybar. The renderer uses `fansi` styling,
   truncates long table values with an ellipsis while keeping full values in
   details, and has focused model/rendering tests.
+- 2026-06-29: T006 of the TUI phase added keyboard-first navigation. The
+  planning TUI now has focus state for plan, details, and logs; Tab cycles
+  forward and Shift+Tab or `b` cycles backward; arrows, PageUp/PageDown,
+  Home/End, and mouse-wheel events move selection or scroll the focused pane;
+  `/` edits the filter; `?` renders in-frame help; and `q`/Ctrl+C exits through
+  the terminal cleanup path. Overflowing details and logs render visible
+  scrollbars, and non-interactive `--tui` invocations fall back to a static
+  frame instead of hanging.
 
 ## Current Agent Loop State
 
@@ -209,9 +217,9 @@ is:
 - The remaining command execution boundaries are structured and narrow: sudo
   symlink operations, the current `tar.xz` fallback, and test/fake executors.
 - The planning TUI now renders deterministically behind explicit `plan --tui`
-  and `apply --tui` entrypoints. The next user-facing gap is interactive TUI
-  navigation: focusable panes, selectable rows, filter input, scrollable details
-  and logs, resize handling, and clean terminal exit.
+  and `apply --tui` entrypoints and includes keyboard navigation, filtering,
+  focusable scrollable details/logs, help, resize-aware layout sizing, and
+  terminal cleanup on quit.
 - After the TUI lands, the repository should enter a codebase-hardening and
   documentation phase before README is treated as final.
 
@@ -224,7 +232,7 @@ The next agent loop should execute this ordered pending queue:
 - T003: Introduce apply events - make core emit structured renderer-agnostic plan/apply events for CLI and TUI.
 - T004: Checkpoint TUI foundation - validate the module shell and event model before terminal rendering work.
 - T005: Render planning TUI - completed deterministic header, plan table, details, logs, footer, keybar, colors, truncation, and renderer/model tests.
-- T006: Add TUI navigation - implement focus cycling, selection, log/detail scrolling, filtering, help, resize handling, and clean quit.
+- T006: Add TUI navigation - completed focus cycling, selection movement, log/detail scrolling, filtering, help, resize handling, and clean quit.
 - T007: Render execution TUI - implement the active apply screen with spinner/progress, recent logs, completed/failed rows, and terminal cleanup.
 - T008: Checkpoint TUI experience - run full validation and manual terminal smoke checks after the TUI is usable.
 - T009: Document TUI smoke workflow - write durable no-network, narrow-terminal, resize, focus, scroll, execution, and cleanup smoke instructions.

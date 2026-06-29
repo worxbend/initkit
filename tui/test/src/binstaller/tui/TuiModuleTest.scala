@@ -48,7 +48,7 @@ object TuiModuleTest extends TestSuite:
       val result = TuiModule.start(
         TuiRequest(TuiMode.Apply, fixture.options),
         FakeHttpTextClient(""),
-        testSettings()
+        testSettings(height = 60).copy(detailScroll = 9)
       )
 
       val plain = stripAnsi(result.lines.mkString("\n"))
@@ -111,7 +111,7 @@ object TuiModuleTest extends TestSuite:
 
     test("ANSI-stripped rendering is stable and keeps full details"):
       val fixture = writeFixture(longValues = true)
-      val model   = modelFor(fixture, selectedIndex = 0, width = 88)
+      val model   = modelFor(fixture, selectedIndex = 0, width = 88, height = 60)
 
       val first  = PlanningTuiRenderer.render(model).mkString("\n")
       val second = PlanningTuiRenderer.render(model).mkString("\n")
@@ -120,20 +120,112 @@ object TuiModuleTest extends TestSuite:
       assert(stripAnsi(first) == stripAnsi(second))
       assert(!plain.contains("\u001b["))
       assert(plain.contains("…"))
-      assert(plain.contains(fixture.longUrl))
-      assert(plain.contains(fixture.longInstallDir.toString))
+      assert(model.detail.exists(_.lines.contains(s"download url: ${fixture.longUrl}")))
+      assert(model.detail.exists(_.lines.contains(s"install dir: ${fixture.longInstallDir}")))
       PlanningTuiStatus.legendOrder.foreach: status =>
         assert(plain.contains(status.label))
       assert(first.contains("\u001b["))
 
+    test("tab and documented backward equivalent cycle pane focus"):
+      val state        = sessionState(writeFixture())
+      val afterForward = PlanningTuiSession.run(
+        state,
+        Vector(TuiInput.Tab, TuiInput.Tab, TuiInput.Tab)
+      )
+      val afterBackward = PlanningTuiSession.run(
+        state,
+        Vector(TuiInput.Tab, TuiInput.Character('b'))
+      )
+
+      assert(afterForward.focusedPane == TuiPane.Plan)
+      assert(afterBackward.focusedPane == TuiPane.Plan)
+
+    test("plan focused arrows move selection and update details"):
+      val finalState = PlanningTuiSession.run(
+        sessionState(writeFixture()),
+        Vector(TuiInput.Down)
+      )
+      val model = finalState.toModel
+
+      assert(finalState.selectedIndex == 1)
+      assert(model.header.selectionText == "2/2 beta")
+      assert(model.detail.exists(_.name == "beta"))
+
+    test("focused details and logs scroll with keyboard and mouse wheel"):
+      val logs  = Vector.tabulate(24)(index => s"log line ${index + 1}")
+      val state = sessionState(
+        writeFixture(longValues = true),
+        settings = testSettings(width = 88).copy(logs = logs)
+      )
+      val detailsScrolled = PlanningTuiSession.run(
+        state.copy(focusedPane = TuiPane.Details),
+        Vector(TuiInput.PageDown, TuiInput.Down)
+      )
+      val logsScrolled = PlanningTuiSession.run(
+        state.copy(focusedPane = TuiPane.Logs),
+        Vector(TuiInput.Down, TuiInput.PageDown, TuiInput.MouseWheelDown, TuiInput.Home)
+      )
+      val logsAtEnd = PlanningTuiSession.run(
+        state.copy(focusedPane = TuiPane.Logs),
+        Vector(TuiInput.End)
+      )
+
+      assert(detailsScrolled.detailScroll > 0)
+      assert(logsScrolled.logScroll == 0)
+      assert(logsAtEnd.logScroll > 0)
+
+    test("overflowing details and logs render visible scrollbars"):
+      val fixture = writeFixture(longValues = true)
+      val logs    = Vector.tabulate(30)(index => s"overflow log line ${index + 1}")
+      val model   = sessionState(
+        fixture,
+        settings = testSettings(width = 88).copy(logs = logs)
+      ).copy(focusedPane = TuiPane.Logs, logScroll = 4).toModel
+      val plain = stripAnsi(PlanningTuiRenderer.render(model).mkString("\n"))
+
+      assert(plain.contains("Details: alpha [idle] scroll"))
+      assert(plain.contains("Logs [focus] scroll"))
+      assert(plain.contains("█"))
+      assert(plain.contains("│"))
+
+    test("slash filtering updates visible rows and header filter text"):
+      val finalState = PlanningTuiSession.run(
+        sessionState(writeFixture()),
+        Vector(
+          TuiInput.Slash,
+          TuiInput.Character('b'),
+          TuiInput.Character('e'),
+          TuiInput.Enter
+        )
+      )
+      val model = finalState.toModel
+
+      assert(model.rows.map(_.name) == Vector("beta"))
+      assert(model.header.selectionText == "1/1 beta")
+      assert(model.header.filterText == "be")
+
+    test("help renders in-frame and quit inputs exit cleanly"):
+      val state      = sessionState(writeFixture())
+      val helpState  = PlanningTuiSession.run(state, Vector(TuiInput.Question))
+      val quitState  = PlanningTuiSession.run(helpState, Vector(TuiInput.Quit))
+      val ctrlCState = PlanningTuiSession.run(state, Vector(TuiInput.CtrlC))
+      val plain      = stripAnsi(PlanningTuiRenderer.render(helpState.toModel).mkString("\n"))
+
+      assert(helpState.helpOpen)
+      assert(plain.contains("Help"))
+      assert(plain.contains("q or Ctrl+C exits"))
+      assert(quitState.exitRequested)
+      assert(ctrlCState.exitRequested)
+
   private def modelFor(
       fixture: TuiFixture,
       selectedIndex: Int,
-      width: Int = 120
+      width: Int = 120,
+      height: Int = 34
   ): PlanningTuiModel = PlanningTuiModel.fromSnapshot(
     snapshotFor(fixture.options),
     TuiRequest(TuiMode.Plan, fixture.options),
-    testSettings(selectedIndex = selectedIndex, width = width)
+    testSettings(selectedIndex = selectedIndex, width = width, height = height)
   )
 
   private def snapshotFor(options: InstallerOptions): ResolvedPlanSnapshot = ResolvedPlanSnapshot
@@ -149,14 +241,29 @@ object TuiModuleTest extends TestSuite:
 
   private def testSettings(
       selectedIndex: Int = 0,
-      width: Int = 120
+      width: Int = 120,
+      height: Int = 34
   ): PlanningTuiSettings = PlanningTuiSettings(
-    viewport = TuiViewport(width, 34),
+    viewport = TuiViewport(width, height),
     appVersion = "1.2.3",
     hostSummary = "linux/amd64",
     selectedIndex = selectedIndex,
     filter = None,
+    filterEditing = false,
+    focusedPane = TuiPane.Plan,
+    detailScroll = 0,
+    logScroll = 0,
+    helpOpen = false,
     logs = Vector("test log line")
+  )
+
+  private def sessionState(
+      fixture: TuiFixture,
+      settings: PlanningTuiSettings = testSettings()
+  ): PlanningTuiState = PlanningTuiState.initial(
+    snapshotFor(fixture.options),
+    TuiRequest(TuiMode.Plan, fixture.options),
+    settings
   )
 
   private def writeFixture(longValues: Boolean = false): TuiFixture =
