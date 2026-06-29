@@ -43,6 +43,11 @@ kind: BinaryDistributionProfile
   `--reset-state`, and `--verbose` options, and only the `plan`, `apply`, and
   `versions` commands. Those commands currently call placeholder core services
   and fail concisely when `--config` is missing.
+- 2026-06-29: T003 completed the config manifest model and validation layer.
+  `config.example.yaml` loads into typed `BinaryDistributionProfile` models,
+  and invalid manifest identity, plan kinds, archive types, executable modes,
+  installer shells, duplicate names, unknown version refs, and sudo symlink
+  policy violations report aggregated validation errors with YAML-like paths.
 
 ### User Experience Goals
 
