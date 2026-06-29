@@ -219,6 +219,12 @@ kind: BinaryDistributionProfile
   filter/help behavior, detail/log scrolling expectations, dry-run execution
   view checks, terminal cleanup checks, and known limitations for live resize,
   mouse support, non-interactive shells, and synchronous apply cancellation.
+- 2026-06-29: T010 completed the mandatory post-TUI readiness review in
+  `docs/post-tui-readiness-review.md`. The review covers module
+  responsibilities, shell/paths/archive/symlink/sudo/state/checksum/redirect/
+  size/timeout/redaction/terminal-control risks, and assigns must-fix follow-up
+  work to T011 with explicit deferral rationale for native `tar.xz`
+  pre-inspection.
 
 ## Current Agent Loop State
 
@@ -261,7 +267,7 @@ The next agent loop should execute this ordered pending queue:
 - T007: Render execution TUI - completed the active apply screen with spinner/progress, recent logs, completed/failed rows, dry-run operation fidelity, and terminal cleanup tests.
 - T008: Checkpoint TUI experience - automated validation passed; live raw-terminal smoke remains blocked until a real interactive TTY is available.
 - T009: Document TUI smoke workflow - completed durable no-network, narrow-terminal, resize, focus, scroll, execution, and cleanup smoke instructions in `docs/tui-smoke.md`.
-- T010: Review post-TUI readiness - perform the mandatory architecture, security, maintainability, test, and native-image review under `docs/`.
+- T010: Review post-TUI readiness - completed mandatory architecture, security, maintainability, test, and native-image review in `docs/post-tui-readiness-review.md`.
 - T011: Fix must-fix readiness issues - implement or explicitly defer every must-fix review finding with regression tests.
 - T012: Document public contracts - add ScalaDoc and intent/risk comments for public and security-sensitive contracts.
 - T013: Checkpoint production readiness - validate after hardening and public contract documentation.
