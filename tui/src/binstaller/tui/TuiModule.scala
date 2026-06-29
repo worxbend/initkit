@@ -300,7 +300,7 @@ object PlanningTuiModel:
       helpOpen = state.helpOpen,
       footer = footerText(state.snapshot, visibleEntries.map(_.tool)),
       keybar =
-        "tab focus | arrows move | space toggle | a/c/i select/clear/invert | / filter | q quit"
+        "tab focus | enter details | l logs | space toggle | a/c/i select/clear/invert | / filter | ? help | q quit"
     )
 
   /** Filter TUI plan entries by name or description using a case-insensitive contains match. */
@@ -1401,6 +1401,7 @@ object PlanningTuiRenderer:
           "Plan focus: Up/Down selects rows, PageUp/PageDown jumps, Home/End moves to edges.",
           width
         ),
+        fit("Enter focuses selected entry details; l focuses logs.", width),
         fit("Details/log focus: arrows, PageUp/PageDown, Home/End, and mouse wheel scroll.", width),
         fit("/ edits the filter, Enter applies it, Escape cancels editing or closes help.", width),
         fit("q or Ctrl+C exits after restoring the terminal.", width),

@@ -442,6 +442,27 @@ object TuiModuleTest extends TestSuite:
       assert(afterForward.focusedPane == TuiPane.Plan)
       assert(afterBackward.focusedPane == TuiPane.Plan)
 
+    test("enter focuses selected details and l focuses logs without resetting browsing state"):
+      val browsedState = PlanningTuiSession.run(
+        sessionState(writeFixture()),
+        Vector(
+          TuiInput.Down,
+          TuiInput.Slash,
+          TuiInput.Character('b'),
+          TuiInput.Enter
+        )
+      )
+      val detailsState = PlanningTuiSession.run(browsedState, Vector(TuiInput.Enter))
+      val logsState    = PlanningTuiSession.run(detailsState, Vector(TuiInput.Character('l')))
+
+      assert(detailsState.focusedPane == TuiPane.Details)
+      assert(detailsState.toModel.detail.exists(_.name == "beta"))
+      assert(detailsState.toModel.header.filterText == "b")
+      assert(detailsState.appState.selectedToolNames == Set("alpha", "beta"))
+      assert(logsState.focusedPane == TuiPane.Logs)
+      assert(logsState.toModel.detail.exists(_.name == "beta"))
+      assert(logsState.toModel.header.filterText == "b")
+
     test("plan focused arrows move selection and update details"):
       val finalState = PlanningTuiSession.run(
         sessionState(writeFixture()),
@@ -506,18 +527,43 @@ object TuiModuleTest extends TestSuite:
       assert(model.header.selectionText == "selected 2 / total 2")
       assert(model.header.filterText == "be")
 
-    test("help renders in-frame and quit inputs exit cleanly"):
+    test("help renders in-frame and closing it preserves browsing state"):
       val state      = sessionState(writeFixture())
       val helpState  = PlanningTuiSession.run(state, Vector(TuiInput.Question))
-      val quitState  = PlanningTuiSession.run(helpState, Vector(TuiInput.Quit))
-      val ctrlCState = PlanningTuiSession.run(state, Vector(TuiInput.CtrlC))
+      val closeState = PlanningTuiSession.run(helpState, Vector(TuiInput.Escape))
       val plain      = stripAnsi(PlanningTuiRenderer.render(helpState.toModel).mkString("\n"))
 
       assert(helpState.helpOpen)
       assert(plain.contains("Help"))
+      assert(plain.contains("Enter focuses selected entry details"))
       assert(plain.contains("q or Ctrl+C exits"))
-      assert(quitState.exitRequested)
-      assert(ctrlCState.exitRequested)
+      assert(!closeState.helpOpen)
+      assert(closeState.appState == state.appState.copy(modal = None))
+
+    test("quit inputs exit through terminal cleanup path"):
+      val fixture       = writeFixture()
+      val quitTerminal  = FakeTuiTerminal(true, TuiViewport(100, 38), Vector(TuiInput.Quit))
+      val ctrlCTerminal = FakeTuiTerminal(true, TuiViewport(100, 38), Vector(TuiInput.CtrlC))
+
+      val quitResult = TuiModule.startInteractive(
+        TuiRequest(TuiMode.Plan, fixture.options),
+        FakeHttpTextClient(""),
+        testSettings(height = 38),
+        quitTerminal
+      )
+      val ctrlCResult = TuiModule.startInteractive(
+        TuiRequest(TuiMode.Plan, fixture.options),
+        FakeHttpTextClient(""),
+        testSettings(height = 38),
+        ctrlCTerminal
+      )
+
+      assert(quitResult.exitCode == 0)
+      assert(ctrlCResult.exitCode == 0)
+      assert(quitTerminal.opened)
+      assert(quitTerminal.closed)
+      assert(ctrlCTerminal.opened)
+      assert(ctrlCTerminal.closed)
 
     test("planning session accepts resize inputs and renders within narrow bounds"):
       val state = sessionState(

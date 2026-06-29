@@ -60,6 +60,11 @@ as part of this refactor.
   are environment-bound: live raw-terminal TUI behavior still needs a real TTY,
   and local native-image validation is blocked because `native-image` is not on
   `PATH`.
+- 2026-06-30: T004 completed browsing controls by wiring `Enter` to selected
+  entry details and `l` to log focus through `TuiAppController`, keeping the
+  existing focus cycling, row movement, scrolling, filtering, help modal, and
+  quit/cleanup paths on the unified state model. Deterministic TUI tests and
+  the non-interactive `tui --config config.example.yaml` smoke passed.
 
 ## Product Target
 

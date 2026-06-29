@@ -250,6 +250,8 @@ object TuiAppController:
     case TuiInput.End            => handleEnd(state)
     case TuiInput.Left           => state.copy(focus = state.focus.previous)
     case TuiInput.Right          => state.copy(focus = state.focus.next)
+    case TuiInput.Enter          => state.copy(focus = TuiPane.Details)
+    case TuiInput.Character('l') => state.copy(focus = TuiPane.Logs)
     case TuiInput.Character(' ') => toggleCurrentVisible(state)
     case TuiInput.Character('a') => selectVisible(state)
     case TuiInput.Character('c') => clearVisible(state)
@@ -262,7 +264,7 @@ object TuiAppController:
     case TuiInput.Resize(value)         => clampScrolls(state.copy(viewport = value))
     case TuiInput.MouseWheelUp          => scrollFocused(state, -1)
     case TuiInput.MouseWheelDown        => scrollFocused(state, 1)
-    case TuiInput.Character(_) | TuiInput.Enter | TuiInput.Backspace | TuiInput.Unknown => state
+    case TuiInput.Character(_) | TuiInput.Backspace | TuiInput.Unknown => state
 
   private def handleDirectional(state: TuiAppState, delta: Int): TuiAppState = state.focus match
     case TuiPane.Plan => state.copy(
