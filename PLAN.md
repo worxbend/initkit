@@ -347,6 +347,13 @@ kind: BinaryDistributionProfile
   is not on `PATH`; `java -version` reports OpenJDK 25.0.3. Live raw-terminal
   TUI behavior remains covered by deterministic tests and still needs a real
   interactive terminal for manual smoke.
+- 2026-06-29: T009 extracted apply state persistence, installer event ADTs,
+  structured apply/install errors, terminal result rendering, and render
+  safety/redaction helpers from `CoreModule.scala` into focused same-package
+  core files. CLI and TUI continue importing the same `binstaller.core` API
+  names. `./mill core.test`, `./mill cli.test`, `./mill tui.test`, `./mill
+  __.compile`, scalafmt check, task JSON validation, and git whitespace checks
+  passed.
 
 ## Current Agent Loop State
 

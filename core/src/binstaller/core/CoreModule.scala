@@ -16,15 +16,8 @@ import binstaller.config.VersionSource
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
-import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.time.Duration
-import java.util.UUID
-import scala.util.Failure
-import scala.util.Success
-import scala.util.Try
-import upickle.default.*
 
 /** Public module metadata for core planning and apply behavior. */
 object CoreModule:
@@ -156,312 +149,11 @@ object BinaryInstallerService:
     stateStore
   )
 
-/** Values that must be redacted when raw runtime data reaches output surfaces. */
-final case class SensitiveValueRedactions(values: Vector[String]):
-
-  /** Replace every configured sensitive value with `<redacted>`. */
-  def redact(value: String): String = values.foldLeft(value): (current, secret) =>
-    current.replace(secret, "<redacted>")
-
-/** Redaction policy constructors. */
-object SensitiveValueRedactions:
-  /** Redaction policy that does not hide any values. */
-  val empty: SensitiveValueRedactions = SensitiveValueRedactions(Vector.empty)
-
-  /** Derive sensitive values from environment-like variables by inspecting variable names. */
-  def fromRuntimeVariables(values: Map[String, String]): SensitiveValueRedactions =
-    val redactedValues = values.toVector.collect:
-      case (name, value) if isSensitiveName(name) && value.length >= 4 => value
-    SensitiveValueRedactions(redactedValues.distinct.sortBy(value => -value.length))
-
-  private def isSensitiveName(name: String): Boolean =
-    val upper = name.toUpperCase(java.util.Locale.ROOT)
-    Vector(
-      "TOKEN",
-      "SECRET",
-      "PASSWORD",
-      "PASS",
-      "API_KEY",
-      "ACCESS_KEY",
-      "PRIVATE_KEY",
-      "CREDENTIAL",
-      "AUTHORIZATION",
-      "BEARER",
-      "SESSION",
-      "COOKIE"
-    ).exists(upper.contains)
-
-/** Display-safety helpers for terminal text, diagnostics, and env rendering. */
-object RenderSafety:
-
-  /** Redact sensitive values and replace terminal-control characters in a display string. */
-  def display(
-      value: String,
-      redactions: SensitiveValueRedactions = SensitiveValueRedactions.empty
-  ): String = scrubControls(redactions.redact(value))
-
-  /** Apply [[display]] to each line. */
-  def displayLines(
-      lines: Vector[String],
-      redactions: SensitiveValueRedactions = SensitiveValueRedactions.empty
-  ): Vector[String] = lines.map(display(_, redactions))
-
-  /** Render a single terminal row by removing embedded line breaks and tabs. */
-  def terminalLine(
-      value: String,
-      redactions: SensitiveValueRedactions = SensitiveValueRedactions.empty
-  ): String = display(value, redactions)
-    .replace('\n', ' ')
-    .replace('\t', ' ')
-
-  /** Render an environment value for diagnostics without exposing likely secrets. */
-  def envValue(name: String, value: String): String =
-    val safeNames = Set("PATH", "HOME", "LANG", "LC_ALL", "SHELL", "TERM", "TMPDIR", "USER")
-    if safeNames(name) || name.startsWith("LC_") then display(value)
-    else "<redacted>"
-
-  private def scrubControls(value: String): String = value.map:
-    case '\n'                                => '\n'
-    case '\t'                                => ' '
-    case ch if ch < ' ' || ch == 0x7f.toChar => '?'
-    case ch                                  => ch
-
-/** Coarse lifecycle phases emitted by plan/apply execution. */
-enum InstallerPhase:
-  case Resolving
-  case Planning
-  case LoadingState
-  case Downloading
-  case VerifyingChecksum
-  case Staging
-  case ApplyingModes
-  case ReplacingInstall
-  case VerifyingExecutables
-  case CreatingSymlinks
-  case SavingState
-
-/** Terminal result state for an individual tool. */
-enum ToolResultStatus:
-  case Completed, Failed
-
-/** Aggregate apply run status. */
-enum InstallerRunStatus:
-  case Succeeded, Failed
-
-/** Progress state for a single download event. */
-enum DownloadProgressStatus:
-  case Started, Advanced, Finished
-
-/** Renderer-agnostic event contract shared by CLI progress and TUI execution views. */
-enum InstallerEvent:
-  case ResolvingStarted(configPath: String, elapsedTime: Duration)
-  case PlanReady(toolCount: Int, stateFilePath: Option[String], elapsedTime: Duration)
-  case ToolStarted(toolName: String, phase: InstallerPhase, elapsedTime: Duration)
-  case ToolPhaseChanged(toolName: String, phase: InstallerPhase, elapsedTime: Duration)
-
-  case DownloadProgress(
-      toolName: String,
-      url: String,
-      downloadedBytes: Long,
-      totalBytes: Option[Long],
-      status: DownloadProgressStatus,
-      elapsedTime: Duration
-  )
-
-  case LogLine(toolName: Option[String], line: String, elapsedTime: Duration)
-
-  case ToolResult(
-      toolName: String,
-      status: ToolResultStatus,
-      installDir: Option[String],
-      failureSummary: Option[String],
-      elapsedTime: Duration
-  )
-
-  case ToolSkipped(
-      toolName: String,
-      reason: String,
-      stateFilePath: Option[String],
-      elapsedTime: Duration
-  )
-
-  case Summary(
-      status: InstallerRunStatus,
-      installed: Int,
-      failed: Int,
-      skipped: Int,
-      exitCode: Int,
-      stateFilePath: Option[String],
-      elapsedTime: Duration
-  )
-
-/** Observer for renderer-agnostic installer events. */
-trait InstallerEventObserver:
-  /** Receive one installer lifecycle event. */
-  def onEvent(event: InstallerEvent): Unit
-
-/** Installer event observer constructors and adapters. */
-object InstallerEventObserver:
-  /** Observer that ignores all installer events. */
-  val none: InstallerEventObserver = _ => ()
-
-  /** Adapt structured installer events to the legacy download-progress observer shape. */
-  def fromDownloadProgress(
-      progressObserver: BinaryDownloadProgressObserver
-  ): InstallerEventObserver = event =>
-    event match
-      case InstallerEvent.DownloadProgress(_, url, downloadedBytes, totalBytes, status, _) =>
-        status match
-          case DownloadProgressStatus.Started =>
-            progressObserver.onProgress(BinaryDownloadProgress.Started(url, totalBytes))
-          case DownloadProgressStatus.Advanced => progressObserver.onProgress(
-              BinaryDownloadProgress.Advanced(url, downloadedBytes, totalBytes)
-            )
-          case DownloadProgressStatus.Finished => progressObserver.onProgress(
-              BinaryDownloadProgress.Finished(url, downloadedBytes, totalBytes)
-            )
-      case _ => ()
-
-/** Expected state-file failures during apply resume. */
-enum ApplyStateError:
-  case InvalidPath(path: String, message: String)
-  case ReadFailed(path: Path, message: String)
-  case WriteFailed(path: Path, message: String)
-  case DecodeFailed(path: Path, message: String)
-
-  case IncompatibleState(
-      path: Path,
-      expectedProfileName: String,
-      actualProfileName: String,
-      expectedFingerprint: String,
-      actualFingerprint: String
-  )
-
-/** Serialized apply state tied to a profile name and manifest fingerprint. */
-final case class ApplyState(
-    schemaVersion: Int,
-    profileName: String,
-    manifestFingerprint: String,
-    tools: Vector[ApplyStateTool]
-)
-
-/** Serialized status for a single tool in the apply state file. */
-final case class ApplyStateTool(
-    name: String,
-    status: String,
-    installDir: Option[String],
-    message: Option[String],
-    download: Option[UrlProvenance] = None
-)
-
-/** Apply-state JSON codecs and constructors. */
-object ApplyState:
-  /** Current apply-state schema version. */
-  val schemaVersion: Int = 1
-
-  /** JSON codec for individual tool state rows. */
-  given ReadWriter[ApplyStateTool] = macroRW
-
-  /** JSON codec for the complete apply state. */
-  given ReadWriter[ApplyState] = macroRW
-
-  /** Create an empty state file for a compatible profile and manifest fingerprint. */
-  def empty(profileName: String, manifestFingerprint: String): ApplyState = ApplyState(
-    schemaVersion,
-    profileName,
-    manifestFingerprint,
-    Vector.empty
-  )
-
-/** Boundary for loading and atomically saving apply state. */
-trait ApplyStateStore:
-  /** Directory that owns relative state filenames. */
-  def cwd: Path
-
-  /** Load state if it exists. */
-  def load(path: Path): Either[ApplyStateError, Option[ApplyState]]
-
-  /** Persist state atomically where supported by the filesystem. */
-  def save(path: Path, state: ApplyState): Either[ApplyStateError, Unit]
-
-/** Apply-state storage constructors. */
-object ApplyStateStore:
-  /** State store rooted in the process current working directory. */
-  def cwd: ApplyStateStore = nio(Path.of("").toAbsolutePath.normalize())
-
-  /** NIO-backed state store rooted in an explicit directory. */
-  def nio(directory: Path): ApplyStateStore =
-    NioApplyStateStore(directory.toAbsolutePath.normalize())
-
-/** Successful installation of a single tool. */
-final case class ToolInstallSuccess(
-    toolName: String,
-    installDir: String,
-    download: Option[UrlProvenance] = None
-)
-
-/** Terminal result emitted for state persistence and renderer summaries. */
-enum TerminalToolResult:
-  case Completed(toolName: String, installDir: String, download: Option[UrlProvenance] = None)
-  case Failed(toolName: String, message: String)
-
-/** Rendering helpers for terminal tool results. */
-object TerminalToolResult:
-
-  /** Render a terminal tool result with terminal safety and redaction applied. */
-  def line(
-      result: TerminalToolResult,
-      redactions: SensitiveValueRedactions = SensitiveValueRedactions.empty
-  ): String = result match
-    case TerminalToolResult.Completed(toolName, installDir, _) =>
-      RenderSafety.display(s"installed $toolName to $installDir", redactions)
-    case TerminalToolResult.Failed(toolName, message) =>
-      RenderSafety.display(s"failed $toolName: $message", redactions)
-
 private final case class ObservedInstallResults(
     lines: Vector[String],
     results: Vector[TerminalToolResult],
     persistenceError: Option[String]
 )
-
-private[core] final case class InstallerEventContext(
-    observer: InstallerEventObserver,
-    startedAtNanos: Long
-):
-  def elapsedTime: Duration = Duration.ofNanos(System.nanoTime() - startedAtNanos)
-
-  def emit(event: Duration => InstallerEvent): Unit = observer.onEvent(event(elapsedTime))
-
-private[core] object InstallerEventContext:
-
-  def start(observer: InstallerEventObserver): InstallerEventContext =
-    InstallerEventContext(observer, System.nanoTime())
-
-/** Expected failure before an apply run is allowed to perform side effects. */
-enum ApplyPreflightError:
-  case ConfirmationRequired
-  case SudoSymlinkNotAllowed(toolName: String)
-  case SudoSymlinkConfirmationRequired(toolName: String)
-
-/** Expected failure while installing one tool. */
-enum ToolInstallError:
-
-  case DownloadFailed(
-      toolName: String,
-      url: String,
-      message: String,
-      provenance: Option[UrlProvenance] = None
-  )
-
-  case ChecksumMismatch(toolName: String, expected: String, actual: String)
-  case StagingFailed(toolName: String, message: String)
-  case ModeApplicationFailed(toolName: String, path: String, mode: String, message: String)
-  case ReplacementFailed(toolName: String, message: String)
-  case ArchiveExtractionFailed(toolName: String, message: String)
-  case MissingExecutable(toolName: String, path: String)
-  case SymlinkFailed(toolName: String, path: String, target: String, message: String)
-  case SudoSymlinkNotAllowed(toolName: String)
-  case SudoSymlinkConfirmationRequired(toolName: String)
 
 /** Installer that applies resolved direct-binary and archive-backed tools. */
 final class DirectBinaryInstaller(
@@ -491,7 +183,7 @@ final class DirectBinaryInstaller(
       terminalObserver: TerminalToolResult => Either[String, Unit],
       eventContext: InstallerEventContext
   ): InstallerResult = preflight(plan, applyConfirmation) match
-    case Some(error) => InstallerResult(Vector(renderPreflightError(error)), 1)
+    case Some(error) => InstallerResult(Vector(ApplyPreflightError.render(error)), 1)
     case None        =>
       val observed = installTools(
         plan.policy,
@@ -638,8 +330,8 @@ final class DirectBinaryInstaller(
     case Right(success) =>
       TerminalToolResult.Completed(success.toolName, success.installDir, success.download)
     case Left(error) => TerminalToolResult.Failed(
-        toolName(error),
-        renderInstallError(error, redactions)
+        ToolInstallError.toolName(error),
+        ToolInstallError.render(error, redactions)
       )
 
   private def toolResultEvent(
@@ -875,100 +567,6 @@ final class DirectBinaryInstaller(
       if resolved.startsWith(installDir) then Right(resolved)
       else Left(ToolInstallError.StagingFailed(tool.name, s"path escapes installDir: $relative"))
 
-  private def toolName(error: ToolInstallError): String = error match
-    case ToolInstallError.DownloadFailed(toolName, _, _, _)         => toolName
-    case ToolInstallError.ChecksumMismatch(toolName, _, _)          => toolName
-    case ToolInstallError.StagingFailed(toolName, _)                => toolName
-    case ToolInstallError.ModeApplicationFailed(toolName, _, _, _)  => toolName
-    case ToolInstallError.ReplacementFailed(toolName, _)            => toolName
-    case ToolInstallError.ArchiveExtractionFailed(toolName, _)      => toolName
-    case ToolInstallError.MissingExecutable(toolName, _)            => toolName
-    case ToolInstallError.SymlinkFailed(toolName, _, _, _)          => toolName
-    case ToolInstallError.SudoSymlinkNotAllowed(toolName)           => toolName
-    case ToolInstallError.SudoSymlinkConfirmationRequired(toolName) => toolName
-
-  private def renderInstallError(
-      error: ToolInstallError,
-      redactions: SensitiveValueRedactions
-  ): String = error match
-    case ToolInstallError.DownloadFailed(toolName, url, message, provenance) => detailBlock(
-        s"download: $url: $message",
-        Vector("tool" -> toolName, "url" -> url, "message" -> message) ++
-          redirectDetailPairs("download", provenance),
-        redactions
-      )
-    case ToolInstallError.ChecksumMismatch(toolName, expected, actual) => detailBlock(
-        s"checksum: sha256 expected $expected, got $actual",
-        Vector(
-          "tool"            -> toolName,
-          "expected sha256" -> expected,
-          "actual sha256"   -> actual,
-          "suggestion" -> "verify the downloaded artifact before updating the manifest checksum"
-        ),
-        redactions
-      )
-    case ToolInstallError.StagingFailed(toolName, message) => detailBlock(
-        s"staging: $message",
-        Vector("tool" -> toolName, "message" -> message),
-        redactions
-      )
-    case ToolInstallError.ModeApplicationFailed(toolName, path, mode, message) => detailBlock(
-        s"mode: $mode for $path: $message",
-        Vector("tool" -> toolName, "path" -> path, "mode" -> mode, "message" -> message),
-        redactions
-      )
-    case ToolInstallError.ReplacementFailed(toolName, message) => detailBlock(
-        s"replacement: $message",
-        Vector("tool" -> toolName, "message" -> message),
-        redactions
-      )
-    case ToolInstallError.ArchiveExtractionFailed(toolName, message) => detailBlock(
-        s"archive extraction: $message",
-        Vector("tool" -> toolName, "message" -> message),
-        redactions
-      )
-    case ToolInstallError.MissingExecutable(toolName, path) => detailBlock(
-        s"verify executable: missing $path",
-        Vector("tool" -> toolName, "expected path" -> path),
-        redactions
-      )
-    case ToolInstallError.SymlinkFailed(toolName, path, target, message) => detailBlock(
-        s"symlink: $target -> $path: $message",
-        Vector("tool" -> toolName, "path" -> path, "target" -> target, "message" -> message),
-        redactions
-      )
-    case ToolInstallError.SudoSymlinkNotAllowed(_) =>
-      "sudo symlinks are not allowed by policy.allowSudoSymlinks"
-    case ToolInstallError.SudoSymlinkConfirmationRequired(_) =>
-      "sudo symlinks require apply confirmation; rerun apply with --yes"
-
-  private def detailBlock(
-      summary: String,
-      details: Vector[(String, String)],
-      redactions: SensitiveValueRedactions
-  ): String =
-    val lines = summary +: details.map((name, value) => s"  $name: $value")
-    RenderSafety.displayLines(lines, redactions).mkString("\n")
-
-  private def redirectDetailPairs(
-      label: String,
-      provenance: Option[UrlProvenance]
-  ): Vector[(String, String)] = provenance.filter(_.redirected) match
-    case Some(value) => Vector(
-        s"$label initial url" -> value.initialUrl,
-        s"$label final url"   -> value.finalUrl,
-        s"$label redirects"   -> UrlProvenance.redirectChainForDisplay(value)
-      )
-    case None => Vector.empty
-
-  private def renderPreflightError(error: ApplyPreflightError): String = error match
-    case ApplyPreflightError.ConfirmationRequired =>
-      "apply requires confirmation by policy.requireConfirmation; rerun apply with --yes"
-    case ApplyPreflightError.SudoSymlinkNotAllowed(toolName) =>
-      s"failed $toolName: sudo symlinks are not allowed by policy.allowSudoSymlinks"
-    case ApplyPreflightError.SudoSymlinkConfirmationRequired(toolName) =>
-      s"failed $toolName: sudo symlinks require apply confirmation; rerun apply with --yes"
-
 /** Constructors for the production binary installer. */
 object DirectBinaryInstaller:
 
@@ -1033,7 +631,7 @@ private object StatefulApplyRunner:
       loadInitialState(path, options.resetState, prepared, stateStore) match
         case Left(error) => InstallerResult(
             Vector(RenderSafety.display(
-              renderStateError(error),
+              ApplyStateError.render(error),
               prepared.plan.redactions
             )),
             1
@@ -1113,7 +711,7 @@ private object StatefulApplyRunner:
       ))
       currentState = updateState(currentState, terminal)
       stateStore.save(path, currentState).left.map(error =>
-        RenderSafety.display(renderStateError(error), prepared.plan.redactions)
+        RenderSafety.display(ApplyStateError.render(error), prepared.plan.redactions)
       )
     val result = installer.installPlanWithObserver(
       pendingPlan,
@@ -1147,75 +745,6 @@ private object StatefulApplyRunner:
   ): Vector[ApplyStateTool] =
     val withoutCurrent = tools.filterNot(_.name == updated.name)
     withoutCurrent :+ updated
-
-  private def renderStateError(error: ApplyStateError): String = error match
-    case ApplyStateError.InvalidPath(path, message)  => s"state path '$path' is invalid: $message"
-    case ApplyStateError.ReadFailed(path, message)   => s"state read failed for $path: $message"
-    case ApplyStateError.WriteFailed(path, message)  => s"state write failed for $path: $message"
-    case ApplyStateError.DecodeFailed(path, message) => s"state decode failed for $path: $message"
-    case ApplyStateError.IncompatibleState(
-          path,
-          expectedProfileName,
-          actualProfileName,
-          expectedFingerprint,
-          actualFingerprint
-        ) =>
-      s"state file $path does not match this manifest: expected profile '$expectedProfileName' " +
-        s"with fingerprint $expectedFingerprint, found profile '$actualProfileName' with " +
-        s"fingerprint $actualFingerprint; rerun with --reset-state to ignore saved state"
-
-private object StatePathResolver:
-
-  def resolve(rawPath: String, cwd: Path): Either[ApplyStateError.InvalidPath, Path] =
-    val path = Path.of(rawPath)
-    if rawPath.trim.isEmpty then invalid(rawPath, "state filename must not be empty")
-    else if path.isAbsolute then invalid(rawPath, "absolute state paths are not allowed")
-    else if path.getNameCount != 1 then
-      invalid(rawPath, "state path must be a filename in the current working directory")
-    else
-      val resolved = cwd.toAbsolutePath.normalize().resolve(path).normalize()
-      if resolved.getParent == cwd.toAbsolutePath.normalize() then Right(resolved)
-      else invalid(rawPath, "state path must stay in the current working directory")
-
-  private def invalid(
-      path: String,
-      message: String
-  ): Either[ApplyStateError.InvalidPath, Path] = Left(ApplyStateError.InvalidPath(path, message))
-
-private final class NioApplyStateStore(val cwd: Path) extends ApplyStateStore:
-
-  def load(path: Path): Either[ApplyStateError, Option[ApplyState]] =
-    if !Files.exists(path) then Right(None)
-    else
-      Try(read[ApplyState](Files.readString(path))) match
-        case Success(state)                     => Right(Some(state))
-        case Failure(error: upickle.core.Abort) =>
-          Left(ApplyStateError.DecodeFailed(path, error.getMessage))
-        case Failure(error) => Left(ApplyStateError.ReadFailed(path, error.getMessage))
-
-  def save(path: Path, state: ApplyState): Either[ApplyStateError, Unit] =
-    val tmp = cwd.resolve(s".${path.getFileName}.tmp-${UUID.randomUUID()}")
-    Try:
-      Files.createDirectories(cwd)
-      // Write to a unique temp file first; a partial state write must never look like a valid
-      // resume checkpoint.
-      val _ = Files.writeString(
-        tmp,
-        write(state, indent = 2),
-        StandardOpenOption.CREATE_NEW,
-        StandardOpenOption.WRITE
-      )
-      val _ = Files.move(
-        tmp,
-        path,
-        StandardCopyOption.ATOMIC_MOVE,
-        StandardCopyOption.REPLACE_EXISTING
-      )
-    match
-      case Success(_)     => Right(())
-      case Failure(error) =>
-        val _ = Files.deleteIfExists(tmp)
-        Left(ApplyStateError.WriteFailed(path, error.getMessage))
 
 private object ManifestFingerprint:
 
