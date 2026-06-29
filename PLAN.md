@@ -44,6 +44,11 @@ as part of this refactor.
   `versions`, and `lock` on non-interactive service-backed paths. The new
   command currently starts the existing planning TUI frame; later tasks move
   selection and plan/dry-run/apply actions inside a unified TUI app state.
+- 2026-06-30: T002 introduced a unified pure `TuiAppState` for browsing mode,
+  header metadata, resolved entries, TUI-local selected tool names, focus,
+  filter, modal, logs, and optional execution state. The planning renderer and
+  session now derive from that state, and TUI selection converts to core
+  `ToolSelection` only through a boundary helper.
 
 ## Product Target
 

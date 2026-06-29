@@ -48,12 +48,12 @@ object TuiModuleTest extends TestSuite:
 
       val plain = stripAnsi(result.lines.mkString("\n"))
       assert(result.exitCode == 0)
-      assert(plain.contains("binstaller 1.2.3 | mode plan"))
+      assert(plain.contains("binstaller 1.2.3 | mode browse"))
       assert(plain.contains("manifest tui-profile (BinaryDistributionProfile)"))
       assert(plain.contains(s"config ${fixture.config}"))
       assert(plain.contains(s"state ${fixture.stateFile}"))
       assert(plain.contains("host linux/amd64"))
-      assert(plain.contains("selection 1/2 alpha"))
+      assert(plain.contains("selected 2 / total 2"))
       assert(plain.contains("Plan"))
       assert(plain.contains("Details: alpha"))
       assert(plain.contains("Logs"))
@@ -249,13 +249,41 @@ object TuiModuleTest extends TestSuite:
 
       assert(model.header.appName == "binstaller")
       assert(model.header.appVersion == "1.2.3")
-      assert(model.header.mode == "plan")
+      assert(model.header.mode == "browse")
       assert(model.header.manifestName == "tui-profile")
       assert(model.header.configPath == fixture.config.toString)
       assert(model.header.stateFilePath.contains(fixture.stateFile.toString))
+      assert(model.header.selectionText == "selected 2 / total 2")
       assert(model.rows.map(_.name) == Vector("alpha", "beta"))
       assert(model.rows.map(_.kind).distinct == Vector("binary-tool"))
       assert(model.rows.head.checksumState == ChecksumAlgorithm.Sha256.value)
+
+    test("app state owns header entries selection focus filter modal logs and execution state"):
+      val fixture = writeFixture()
+      val state   = sessionState(fixture).appState
+
+      assert(state.mode == TuiBrowsingMode.Browsing)
+      assert(state.header.configPath == fixture.config.toString)
+      assert(state.header.stateFilePath.contains(fixture.stateFile.toString))
+      assert(state.header.profileName == "tui-profile")
+      assert(state.header.hostSummary == "linux/amd64")
+      assert(state.header.selectionText == "selected 2 / total 2")
+      assert(state.entries.map(_.name) == Vector("alpha", "beta"))
+      assert(state.selectedToolNames == Set("alpha", "beta"))
+      assert(state.focus == TuiPane.Plan)
+      assert(state.filter == TuiAppFilter.committed(None))
+      assert(state.modal.isEmpty)
+      assert(state.logs.exists(_.contains("resolved manifest tui-profile")))
+      assert(state.executionState.isEmpty)
+
+    test("tui selection converts to core selection only at service boundary"):
+      val fixture       = writeFixture()
+      val state         = sessionState(fixture).appState
+      val tuiSelection  = TuiSelection(Set("beta"))
+      val coreSelection = TuiCoreSelection.toToolSelection(tuiSelection, state.entries)
+
+      assert(tuiSelection.selectedToolNames == Set("beta"))
+      assert(coreSelection == ToolSelection(only = Vector("beta"), skip = Vector.empty))
 
     test("row selection highlights the active entry and updates details"):
       val fixture = writeFixture()
@@ -275,7 +303,6 @@ object TuiModuleTest extends TestSuite:
       val snapshot      = snapshotFor(fixture.options.copy(statePath = Some(overrideState)))
       val model         = PlanningTuiModel.fromSnapshot(
         snapshot,
-        TuiRequest(TuiMode.Plan, fixture.options),
         testSettings()
       )
 
@@ -333,7 +360,6 @@ object TuiModuleTest extends TestSuite:
       )
       val model = PlanningTuiModel.fromSnapshot(
         snapshot.copy(plan = plan),
-        TuiRequest(TuiMode.Plan, fixture.options),
         testSettings(width = 100, height = 50).copy(detailScroll = 6)
       )
 
@@ -371,7 +397,7 @@ object TuiModuleTest extends TestSuite:
       val model = finalState.toModel
 
       assert(finalState.selectedIndex == 1)
-      assert(model.header.selectionText == "2/2 beta")
+      assert(model.header.selectionText == "selected 2 / total 2")
       assert(model.detail.exists(_.name == "beta"))
 
     test("focused details and logs scroll with keyboard and mouse wheel"):
@@ -381,15 +407,15 @@ object TuiModuleTest extends TestSuite:
         settings = testSettings(width = 88).copy(logs = logs)
       )
       val detailsScrolled = PlanningTuiSession.run(
-        state.copy(focusedPane = TuiPane.Details),
+        state.withFocus(TuiPane.Details),
         Vector(TuiInput.PageDown, TuiInput.Down)
       )
       val logsScrolled = PlanningTuiSession.run(
-        state.copy(focusedPane = TuiPane.Logs),
+        state.withFocus(TuiPane.Logs),
         Vector(TuiInput.Down, TuiInput.PageDown, TuiInput.MouseWheelDown, TuiInput.Home)
       )
       val logsAtEnd = PlanningTuiSession.run(
-        state.copy(focusedPane = TuiPane.Logs),
+        state.withFocus(TuiPane.Logs),
         Vector(TuiInput.End)
       )
 
@@ -403,7 +429,7 @@ object TuiModuleTest extends TestSuite:
       val model   = sessionState(
         fixture,
         settings = testSettings(width = 88).copy(logs = logs)
-      ).copy(focusedPane = TuiPane.Logs, logScroll = 4).toModel
+      ).withFocus(TuiPane.Logs).withLogScroll(4).toModel
       val plain = stripAnsi(PlanningTuiRenderer.render(model).mkString("\n"))
 
       assert(plain.contains("Details: alpha [idle] scroll"))
@@ -424,7 +450,7 @@ object TuiModuleTest extends TestSuite:
       val model = finalState.toModel
 
       assert(model.rows.map(_.name) == Vector("beta"))
-      assert(model.header.selectionText == "1/1 beta")
+      assert(model.header.selectionText == "selected 2 / total 2")
       assert(model.header.filterText == "be")
 
     test("help renders in-frame and quit inputs exit cleanly"):
@@ -546,7 +572,6 @@ object TuiModuleTest extends TestSuite:
       height: Int = 34
   ): PlanningTuiModel = PlanningTuiModel.fromSnapshot(
     snapshotFor(fixture.options),
-    TuiRequest(TuiMode.Plan, fixture.options),
     testSettings(selectedIndex = selectedIndex, width = width, height = height)
   )
 
@@ -584,7 +609,6 @@ object TuiModuleTest extends TestSuite:
       settings: PlanningTuiSettings = testSettings()
   ): PlanningTuiState = PlanningTuiState.initial(
     snapshotFor(fixture.options),
-    TuiRequest(TuiMode.Plan, fixture.options),
     settings
   )
 

@@ -177,7 +177,7 @@ object CliModuleTest extends TestSuite:
       val result   = runCli(Vector("tui", "--config", config.toString), service)
 
       assert(result.exitCode == 0)
-      assert(stripAnsi(result.out).contains("mode plan"))
+      assert(stripAnsi(result.out).contains("mode browse"))
       assert(result.out.contains("Plan"))
       assert(result.out.contains("Details: alpha"))
       assert(service.planOptions.isEmpty)

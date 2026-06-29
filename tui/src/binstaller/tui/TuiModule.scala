@@ -85,7 +85,7 @@ object TuiModule:
         1
       )
     case Right(snapshot) =>
-      val model = PlanningTuiModel.fromSnapshot(snapshot, request, settings)
+      val model = PlanningTuiModel.fromAppState(TuiAppState.initial(snapshot, settings))
       InstallerResult(PlanningTuiRenderer.render(model), 0)
 
   private def startPlanningInteractive(
@@ -99,7 +99,7 @@ object TuiModule:
         1
       )
     case Right(snapshot) =>
-      val initial = PlanningTuiState.initial(snapshot, request, settings)
+      val initial = PlanningTuiState.initial(snapshot, settings)
       if terminal.isInteractive then PlanningTuiSession.run(initial, terminal)
       else
         val lines = PlanningTuiRenderer.render(initial.toModel) :+
@@ -250,46 +250,63 @@ object PlanningTuiModel:
   /** Build a render model from a resolved plan snapshot and current UI settings. */
   def fromSnapshot(
       snapshot: ResolvedPlanSnapshot,
-      request: TuiRequest,
       settings: PlanningTuiSettings
-  ): PlanningTuiModel =
-    val visibleTools  = filterTools(snapshot.plan.tools, settings.filter)
-    val selectedIndex = clampedIndex(settings.selectedIndex, visibleTools)
-    val selectedTool  = visibleTools.lift(selectedIndex)
-    val rows          = visibleTools.zipWithIndex.map:
-      case (tool, index) =>
-        rowForTool(index, selected = index == selectedIndex, tool, snapshot.plan.redactions)
+  ): PlanningTuiModel = fromAppState(TuiAppState.initial(snapshot, settings))
+
+  /** Build a render model from the unified TUI application state. */
+  def fromAppState(state: TuiAppState): PlanningTuiModel =
+    val visibleEntries = state.visibleEntries
+    val selectedIndex  = clampedIndex(state.selectedIndex, visibleEntries)
+    val selectedEntry  = visibleEntries.lift(selectedIndex)
+    val rows           = visibleEntries.zipWithIndex.map:
+      case (entry, index) => rowForTool(
+          index,
+          selected = index == selectedIndex,
+          entry.tool,
+          state.snapshot.plan.redactions
+        )
     val header = PlanningTuiHeader(
-      appName = "binstaller",
-      appVersion = settings.appVersion,
-      mode = request.mode.commandName,
-      manifestName = snapshot.profileName,
-      manifestKind = snapshot.manifestKind,
-      configPath = snapshot.configPath,
-      stateFilePath = snapshot.stateFilePath,
-      hostSummary = settings.hostSummary,
-      selectionText = selectionText(selectedIndex, visibleTools),
-      filterText = filterText(settings.filter, settings.filterEditing)
+      appName = state.header.appName,
+      appVersion = state.header.appVersion,
+      mode = state.mode.label,
+      manifestName = state.header.profileName,
+      manifestKind = state.header.manifestKind,
+      configPath = state.header.configPath,
+      stateFilePath = state.header.stateFilePath,
+      hostSummary = state.header.hostSummary,
+      selectionText = state.header.selectionText,
+      filterText = state.filter.displayText
     )
-    val logs   = settings.logs ++ defaultLogs(snapshot, visibleTools.size)
-    val layout = PlanningTuiLayout.forViewport(settings.viewport)
+    val logs   = state.logs
+    val layout = PlanningTuiLayout.forViewport(state.viewport)
     PlanningTuiModel(
-      viewport = settings.viewport,
+      viewport = state.viewport,
       header = header,
-      focusedPane = settings.focusedPane,
+      focusedPane = state.focus,
       rows = rows,
-      detail = selectedTool.map(detailForTool(_, snapshot.plan.redactions)),
+      detail =
+        selectedEntry.map(entry => detailForTool(entry.tool, state.snapshot.plan.redactions)),
       detailScroll = clampScroll(
-        settings.detailScroll,
-        selectedTool.map(detailForTool(_, snapshot.plan.redactions)).fold(0)(_.lines.size),
+        state.detailScroll,
+        selectedEntry.map(entry => detailForTool(entry.tool, state.snapshot.plan.redactions)).fold(
+          0
+        )(_.lines.size),
         layout.detailBodyHeight
       ),
-      logs = logs,
-      logScroll = clampScroll(settings.logScroll, logs.size, layout.logBodyHeight),
-      helpOpen = settings.helpOpen,
-      footer = footerText(snapshot, visibleTools),
+      logs = state.logs,
+      logScroll = clampScroll(state.logScroll, logs.size, layout.logBodyHeight),
+      helpOpen = state.helpOpen,
+      footer = footerText(state.snapshot, visibleEntries.map(_.tool)),
       keybar = "tab focus | shift-tab/b back | arrows select/scroll | / filter | ? help | q quit"
     )
+
+  /** Filter TUI plan entries by name or description using a case-insensitive contains match. */
+  def filterEntries(
+      entries: Vector[TuiPlanEntry],
+      filter: Option[String]
+  ): Vector[TuiPlanEntry] = filter.map(_.trim).filter(_.nonEmpty) match
+    case None        => entries
+    case Some(value) => entries.filter(entry => matchesFilter(entry.tool, value))
 
   /** Filter resolved tools by name or description using a case-insensitive contains match. */
   def filterTools(
@@ -297,25 +314,15 @@ object PlanningTuiModel:
       filter: Option[String]
   ): Vector[ResolvedTool] = filter.map(_.trim).filter(_.nonEmpty) match
     case None        => tools
-    case Some(value) =>
-      val needle = value.toLowerCase
-      tools.filter: tool =>
-        tool.name.toLowerCase.contains(needle) ||
-          tool.description.exists(_.toLowerCase.contains(needle))
+    case Some(value) => tools.filter(matchesFilter(_, value))
 
-  private def clampedIndex(index: Int, tools: Vector[ResolvedTool]): Int =
-    if tools.isEmpty then 0 else index.max(0).min(tools.size - 1)
+  private def matchesFilter(tool: ResolvedTool, value: String): Boolean =
+    val needle = value.toLowerCase
+    tool.name.toLowerCase.contains(needle) ||
+    tool.description.exists(_.toLowerCase.contains(needle))
 
-  private def selectionText(index: Int, tools: Vector[ResolvedTool]): String =
-    tools.lift(index) match
-      case Some(tool) => s"${index + 1}/${tools.size} ${tool.name}"
-      case None       => "none"
-
-  private def filterText(filter: Option[String], editing: Boolean): String =
-    val value = filter.filter(_.nonEmpty).getOrElse("")
-    if editing then s"/$value"
-    else if value.isEmpty then "none"
-    else value
+  private def clampedIndex(index: Int, entries: Vector[TuiPlanEntry]): Int =
+    if entries.isEmpty then 0 else index.max(0).min(entries.size - 1)
 
   private def clampScroll(offset: Int, total: Int, window: Int): Int =
     offset.max(0).min((total - window).max(0))
@@ -423,13 +430,6 @@ object PlanningTuiModel:
     symlink.privilege match
       case SymlinkPrivilege.User => s"ln -sfn '$target' '$destination'"
       case SymlinkPrivilege.Sudo => s"sudo ln -sfn '$target' '$destination'"
-
-  private def defaultLogs(snapshot: ResolvedPlanSnapshot, visibleTools: Int): Vector[String] =
-    Vector(
-      s"resolved manifest ${snapshot.profileName}",
-      s"loaded $visibleTools selected plan entr${if visibleTools == 1 then "y" else "ies"}",
-      "downloads are not started in the planning TUI"
-    )
 
   private def footerText(snapshot: ResolvedPlanSnapshot, tools: Vector[ResolvedTool]): String =
     val sudoSymlinks     = tools.flatMap(_.symlinks).count(_.privilege == SymlinkPrivilege.Sudo)
@@ -969,160 +969,47 @@ enum TuiInput:
   case MouseWheelUp, MouseWheelDown
   case Unknown
 
-/** Pure state machine for planning TUI navigation, filtering, scrolling, and exit. */
-final case class PlanningTuiState(
-    snapshot: ResolvedPlanSnapshot,
-    request: TuiRequest,
-    viewport: TuiViewport,
-    appVersion: String,
-    hostSummary: String,
-    selectedIndex: Int,
-    filter: Option[String],
-    filterDraft: Option[String],
-    focusedPane: TuiPane,
-    detailScroll: Int,
-    logScroll: Int,
-    helpOpen: Boolean,
-    logs: Vector[String],
-    exitRequested: Boolean
-):
+/** Compatibility wrapper for planning paths backed by the unified [[TuiAppState]]. */
+final case class PlanningTuiState(appState: TuiAppState):
 
   /** Convert interaction state into a deterministic render model. */
-  def toModel: PlanningTuiModel = PlanningTuiModel.fromSnapshot(
-    snapshot,
-    request,
-    PlanningTuiSettings(
-      viewport = viewport,
-      appVersion = appVersion,
-      hostSummary = hostSummary,
-      selectedIndex = selectedIndex,
-      filter = activeFilter,
-      filterEditing = filterDraft.isDefined,
-      focusedPane = focusedPane,
-      detailScroll = detailScroll,
-      logScroll = logScroll,
-      helpOpen = helpOpen,
-      logs = logs
-    )
-  )
+  def toModel: PlanningTuiModel = PlanningTuiModel.fromAppState(appState)
+
+  /** Current terminal viewport. */
+  def viewport: TuiViewport = appState.viewport
+
+  /** Current highlighted entry index in the visible list. */
+  def selectedIndex: Int = appState.selectedIndex
+
+  /** Current focused pane. */
+  def focusedPane: TuiPane = appState.focus
+
+  /** Current detail-pane scroll offset. */
+  def detailScroll: Int = appState.detailScroll
+
+  /** Current log-pane scroll offset. */
+  def logScroll: Int = appState.logScroll
+
+  /** Whether the help modal is currently visible. */
+  def helpOpen: Boolean = appState.helpOpen
+
+  /** Whether the planning session has requested exit. */
+  def exitRequested: Boolean = appState.exitRequested
 
   /** Handle one parsed input event. */
-  def handle(input: TuiInput): PlanningTuiState =
-    if exitRequested then this
-    else
-      filterDraft match
-        case Some(_) => handleFilterInput(input)
-        case None    => handleNavigationInput(input)
-
-  private def handleFilterInput(input: TuiInput): PlanningTuiState = input match
-    case TuiInput.Enter     => commitFilter
-    case TuiInput.Escape    => copy(filterDraft = None)
-    case TuiInput.Backspace =>
-      val draft = filterDraft.getOrElse("")
-      copy(filterDraft = Some(draft.dropRight(1))).clampSelection
-    case TuiInput.CtrlC                                => copy(exitRequested = true)
-    case TuiInput.Character(value) if !value.isControl =>
-      copy(filterDraft = Some(filterDraft.getOrElse("") + value)).clampSelection
-    case TuiInput.Resize(value) => copy(viewport = value).clampScrolls
-    case _                      => this
-
-  private def handleNavigationInput(input: TuiInput): PlanningTuiState = input match
-    case TuiInput.Tab                   => copy(focusedPane = focusedPane.next)
-    case TuiInput.BackTab               => copy(focusedPane = focusedPane.previous)
-    case TuiInput.Character('b')        => copy(focusedPane = focusedPane.previous)
-    case TuiInput.Up                    => handleDirectional(-1)
-    case TuiInput.Down                  => handleDirectional(1)
-    case TuiInput.PageUp                => handlePage(-1)
-    case TuiInput.PageDown              => handlePage(1)
-    case TuiInput.Home                  => handleHome
-    case TuiInput.End                   => handleEnd
-    case TuiInput.Left                  => copy(focusedPane = focusedPane.previous)
-    case TuiInput.Right                 => copy(focusedPane = focusedPane.next)
-    case TuiInput.Slash                 => copy(filterDraft = Some(filter.getOrElse("")))
-    case TuiInput.Question              => copy(helpOpen = !helpOpen)
-    case TuiInput.Escape                => copy(helpOpen = false)
-    case TuiInput.Quit | TuiInput.CtrlC => copy(exitRequested = true)
-    case TuiInput.Resize(value)         => copy(viewport = value).clampScrolls
-    case TuiInput.MouseWheelUp          => scrollFocused(-1)
-    case TuiInput.MouseWheelDown        => scrollFocused(1)
-    case TuiInput.Character(_) | TuiInput.Enter | TuiInput.Backspace | TuiInput.Unknown => this
-
-  private def handleDirectional(delta: Int): PlanningTuiState = focusedPane match
-    case TuiPane.Plan => copy(
-        selectedIndex = (selectedIndex + delta).max(0).min((visibleToolCount - 1).max(0)),
-        detailScroll = 0
-      )
-    case TuiPane.Details => scrollDetails(delta)
-    case TuiPane.Logs    => scrollLogs(delta)
-
-  private def handlePage(direction: Int): PlanningTuiState =
-    val layout = PlanningTuiLayout.forViewport(viewport)
-    focusedPane match
-      case TuiPane.Plan => copy(
-          selectedIndex = (selectedIndex + direction * layout.tableBodyHeight)
-            .max(0)
-            .min((visibleToolCount - 1).max(0)),
-          detailScroll = 0
-        )
-      case TuiPane.Details => scrollDetails(direction * layout.detailBodyHeight)
-      case TuiPane.Logs    => scrollLogs(direction * layout.logBodyHeight)
-
-  private def handleHome: PlanningTuiState = focusedPane match
-    case TuiPane.Plan    => copy(selectedIndex = 0, detailScroll = 0)
-    case TuiPane.Details => copy(detailScroll = 0)
-    case TuiPane.Logs    => copy(logScroll = 0)
-
-  private def handleEnd: PlanningTuiState = focusedPane match
-    case TuiPane.Plan    => copy(selectedIndex = (visibleToolCount - 1).max(0), detailScroll = 0)
-    case TuiPane.Details =>
-      val layout = PlanningTuiLayout.forViewport(viewport)
-      copy(detailScroll = maxDetailScroll(layout))
-    case TuiPane.Logs =>
-      val layout = PlanningTuiLayout.forViewport(viewport)
-      copy(logScroll = maxLogScroll(layout))
-
-  private def scrollFocused(delta: Int): PlanningTuiState = focusedPane match
-    case TuiPane.Plan    => this
-    case TuiPane.Details => scrollDetails(delta)
-    case TuiPane.Logs    => scrollLogs(delta)
-
-  private def scrollDetails(delta: Int): PlanningTuiState =
-    val layout = PlanningTuiLayout.forViewport(viewport)
-    copy(detailScroll = (detailScroll + delta).max(0).min(maxDetailScroll(layout)))
-
-  private def scrollLogs(delta: Int): PlanningTuiState =
-    val layout = PlanningTuiLayout.forViewport(viewport)
-    copy(logScroll = (logScroll + delta).max(0).min(maxLogScroll(layout)))
-
-  private def commitFilter: PlanningTuiState =
-    val committed = filterDraft.flatMap(value => Option(value.trim).filter(_.nonEmpty))
-    copy(filter = committed, filterDraft = None).clampSelection
-
-  private def clampSelection: PlanningTuiState =
-    copy(selectedIndex = selectedIndex.max(0).min((visibleToolCount - 1).max(0))).clampScrolls
+  def handle(input: TuiInput): PlanningTuiState = PlanningTuiState(
+    TuiAppController.handle(appState, input)
+  )
 
   /** Clamp scroll offsets to the currently visible detail/log windows. */
-  def clampScrolls: PlanningTuiState =
-    val layout = PlanningTuiLayout.forViewport(viewport)
-    copy(
-      detailScroll = detailScroll.max(0).min(maxDetailScroll(layout)),
-      logScroll = logScroll.max(0).min(maxLogScroll(layout))
-    )
+  def clampScrolls: PlanningTuiState = PlanningTuiState(TuiAppController.clamp(appState))
 
-  private def activeFilter: Option[String] = filterDraft.orElse(filter)
+  /** Return a state focused on the given pane. */
+  def withFocus(pane: TuiPane): PlanningTuiState = PlanningTuiState(appState.copy(focus = pane))
 
-  private def visibleToolCount: Int =
-    PlanningTuiModel.filterTools(snapshot.plan.tools, activeFilter).size
-
-  private def selectedDetailLines: Int = toModel.detail.fold(0)(_.lines.size)
-
-  private def visibleLogLines: Int = toModel.logs.size
-
-  private def maxDetailScroll(layout: PlanningTuiLayout): Int =
-    (selectedDetailLines - layout.detailBodyHeight).max(0)
-
-  private def maxLogScroll(layout: PlanningTuiLayout): Int =
-    (visibleLogLines - layout.logBodyHeight).max(0)
+  /** Return a state with an explicit log-pane scroll offset. */
+  def withLogScroll(offset: Int): PlanningTuiState =
+    PlanningTuiState(appState.copy(logScroll = offset))
 
 /** Planning interaction-state constructors. */
 object PlanningTuiState:
@@ -1130,24 +1017,9 @@ object PlanningTuiState:
   /** Build initial state from a resolved snapshot and renderer settings. */
   def initial(
       snapshot: ResolvedPlanSnapshot,
-      request: TuiRequest,
       settings: PlanningTuiSettings
-  ): PlanningTuiState = PlanningTuiState(
-    snapshot = snapshot,
-    request = request,
-    viewport = settings.viewport,
-    appVersion = settings.appVersion,
-    hostSummary = settings.hostSummary,
-    selectedIndex = settings.selectedIndex,
-    filter = settings.filter,
-    filterDraft = if settings.filterEditing then settings.filter.orElse(Some("")) else None,
-    focusedPane = settings.focusedPane,
-    detailScroll = settings.detailScroll,
-    logScroll = settings.logScroll,
-    helpOpen = settings.helpOpen,
-    logs = settings.logs,
-    exitRequested = false
-  ).clampSelection
+  ): PlanningTuiState =
+    PlanningTuiState(TuiAppController.clamp(TuiAppState.initial(snapshot, settings)))
 
 /** Viewport-derived body heights for planning panes. */
 final case class PlanningTuiLayout(
@@ -1172,21 +1044,11 @@ object PlanningTuiSession:
 
   /** Run a deterministic input sequence without touching the terminal. */
   def run(initial: PlanningTuiState, inputs: Vector[TuiInput]): PlanningTuiState =
-    inputs.foldLeft(initial): (state, input) =>
-      if state.exitRequested then state else state.handle(input)
+    PlanningTuiState(TuiAppRunner.run(initial.appState, inputs))
 
   /** Run against a terminal boundary, restoring terminal state on exit or failure. */
   def run(initial: PlanningTuiState, terminal: TuiTerminal): InstallerResult =
-    var state = initial.copy(viewport = terminal.viewport).clampScrolls
-    try
-      terminal.open()
-      while !state.exitRequested do
-        terminal.render(PlanningTuiRenderer.render(state.toModel))
-        terminal.readInput() match
-          case Some(input) => state = state.handle(input)
-          case None        => state = state.copy(exitRequested = true)
-      InstallerResult(Vector.empty, 0)
-    finally terminal.close()
+    TuiAppRunner.run(initial.appState, terminal)
 
 /** Terminal boundary used by the interactive TUI session. */
 trait TuiTerminal:
@@ -1456,7 +1318,7 @@ object PlanningTuiRenderer:
       fit(s"config ${header.configPath}", width),
       fit(s"state ${header.stateFilePath.getOrElse("not configured")}", width),
       fit(
-        s"host ${header.hostSummary} | selection ${header.selectionText} | filter ${header.filterText}",
+        s"host ${header.hostSummary} | ${header.selectionText} | filter ${header.filterText}",
         width
       ),
       separator(width)
