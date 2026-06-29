@@ -165,6 +165,14 @@ as part of this refactor.
   `native-image` is not on `PATH` (`command -v native-image` exits 1), and
   stdin is not a live TTY (`test -t 0` exits 1), so live raw-terminal smoke
   remains a documented manual/interactive-environment check.
+- 2026-06-30: Validation iteration 40 re-ran the checkpoint validation after
+  T016. JSON validation, focused config/core/CLI/TUI tests, recursive
+  compile/test, scalafmt check, Mill resolution, app help/config smokes,
+  first-class static `tui --config config.example.yaml`, and `git diff --check`
+  all passed with no source fixes. `plan --help` and `apply --help` logs still
+  contain no `--tui`. The only remaining blockers are environment-bound:
+  `native-image` is absent from `PATH`, and stdin is not a live TTY for the
+  manual raw-terminal smoke.
 
 ## Product Target
 
