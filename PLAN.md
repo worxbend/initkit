@@ -74,8 +74,8 @@ kind: BinaryDistributionProfile
   `snap`, `aur`, `cargo`, and `sdkman`.
 - Package source setup.
 - Nerd Fonts as a custom installer kind.
-- Dotfiles as a custom installer kind. Dotbot is in scope only as a downloaded
-  binary tool.
+- Dotfiles as a custom installer kind. Worxbend `dotbot-go` is in scope only as
+  a downloaded binary tool.
 - Generic shell script workflows unrelated to binary distribution installs.
 - TUI as a required first milestone.
 - Broad distro provisioning.
@@ -101,7 +101,8 @@ The initial config should faithfully replace these script entries:
 | `neovim` | latest GitHub archive | `tar.gz`, move tree, create local and sudo symlinks |
 | `lazygit` | pinned `0.61.0` | `tar.gz`, expose `lazygit`, symlink `lzg` |
 | `jujutsu` | pinned `0.40.0` | `tar.gz`, expose `jj`, symlink aliases |
-| `dotbot` | pinned `1.24.0` | `tar.gz`, expose `dotbot` |
+| `dotbot` | pinned `v0.3.0` | Worxbend `dotbot-go` `tar.gz`, expose `dotbot` |
+| `nerd-font-installer` | pinned `v1.0.6` | Worxbend `tar.gz`, expose `nerdfont-install` and alias |
 
 ## Manifest Contract
 
@@ -138,7 +139,7 @@ policy:
   cleanInstall: true
   requireConfirmation: true
   allowSudoSymlinks: false
-  stateFile: "${HOME}/.local/state/binstaller/developer-binaries.state.json"
+  stateFile: developer-binaries.state.json
 ```
 
 Fields:
@@ -149,7 +150,8 @@ Fields:
 - `cleanInstall`: default value for tool-level clean installs.
 - `requireConfirmation`: require an explicit `--yes` before apply mode.
 - `allowSudoSymlinks`: permits `symlinks[].sudo: true`; false by default.
-- `stateFile`: optional default state path.
+- `stateFile`: optional state file name. The file always lives in the current
+  working directory. Directory components are invalid.
 
 CLI flags should override policy values when provided.
 
@@ -162,6 +164,7 @@ include:
 - `${USER}`
 - `${appsDir}`
 - `${profileName}`
+- `${cwd}`
 - `${toolName}`
 - `${version}`
 
@@ -532,11 +535,25 @@ general shell execution feature.
 
 ### `dotbot`
 
-- Version: `1.24.0`.
+- Source: `worxbend/dotbot-go`.
+- Version: `v0.3.0`.
 - URL:
-  `https://github.com/anishathalye/dotbot/releases/download/v${version}/dotbot-linux-x64.tar.gz`.
+  `https://github.com/worxbend/dotbot-go/releases/download/${version}/dotbot-linux-amd64.tar.gz`.
 - Extract `dotbot` into `bin/dotbot`.
 - Mark executable.
+- Use the published Linux amd64 release asset checksum when available.
+
+### `nerd-font-installer`
+
+- Source: `worxbend/nerd-font-installer`.
+- Version: `v1.0.6`.
+- URL:
+  `https://github.com/worxbend/nerd-font-installer/releases/download/${version}/nerdfont-install_${version}_linux_amd64.tar.gz`.
+- Extract `nerdfont-install_${version}_linux_amd64/nerdfont-install` into
+  `bin/nerdfont-install`.
+- Create local symlink `bin/nerd-font-installer`.
+- Mark executable.
+- Use the published Linux amd64 release asset checksum when available.
 
 ## Version Management
 
@@ -613,7 +630,8 @@ binstaller apply --config config.example.yaml --locked --yes
 
 - `--config <path>`: required for `plan`, `apply`, `versions`, and later
   `lock`.
-- `--state <path>`: overrides `spec.policy.stateFile`.
+- `--state <name>`: overrides `spec.policy.stateFile` with a file name in the
+  current working directory. Paths with directory components are rejected.
 - `--reset-state`: ignore existing state and start fresh.
 - `--verbose`: include lower-level download and extraction details.
 
@@ -745,6 +763,9 @@ State rules:
 
 - Reject state if `profileName` differs.
 - Reject state if manifest fingerprint differs unless `--reset-state`.
+- State is always read from and written to the current working directory.
+- `spec.policy.stateFile` and `--state` accept only a file name, not an
+  absolute path or a relative path containing directories.
 - Dynamic/latest tools should store the final URL used.
 - Resuming skips completed tools by name.
 - Failed tools are attempted again unless the user skips them.
@@ -886,7 +907,8 @@ Acceptance checks:
 
 - Regression test asserts expected tool names:
   `yazi`, `zig`, `minikube`, `xplr`, `kind`, `zellij`, `helm`, `kubectl`,
-  `kustomize`, `neovide`, `neovim`, `lazygit`, `jujutsu`, `dotbot`.
+  `kustomize`, `neovide`, `neovim`, `lazygit`, `jujutsu`, `dotbot`,
+  `nerd-font-installer`.
 - Regression test asserts expected install dirs under `${appsDir}`.
 - Regression test asserts Neovim sudo symlinks are present and gated by policy.
 
@@ -897,13 +919,15 @@ Deliverables:
 - State load/write model.
 - Manifest fingerprinting.
 - Completed-tool skip logic.
-- `--state` and `--reset-state` behavior.
+- CWD-local `--state` and `--reset-state` behavior.
 
 Acceptance checks:
 
 - Completed tools are skipped on resume.
 - Failed tools are retried.
 - Stale state fails with a clear message.
+- State files are created only in the current working directory.
+- Absolute state paths and nested relative state paths are rejected.
 - `--reset-state` starts fresh.
 
 ### P008 - CLI Polish And Reporting
@@ -936,6 +960,47 @@ Acceptance checks:
   available.
 - Release workflow uploads Linux amd64 binary.
 - Native binary can run `--help`, `plan`, and `apply --dry-run`.
+
+### P010 - Post-Implementation Review And Hardening
+
+This phase starts only after the first complete implementation is working:
+manifest loading, planning, dry-run, apply, config conversion, state/resume, CLI
+reporting, tests, and native release wiring.
+
+Deliverables:
+
+- Review the finished codebase end to end, including config parsing, version
+  resolution, download handling, archive extraction, installer scripts, symlink
+  creation, state writes, CLI reporting, tests, and release workflow.
+- Analyze security, reliability, maintainability, and user-experience risks.
+- Prepare a written improvement report before beginning broad follow-up work.
+- Convert accepted suggestions into a prioritized hardening backlog.
+
+Required review questions:
+
+- Can a malicious or malformed archive write outside the staging directory?
+- Are downloads written atomically and verified before replacing an existing
+  install?
+- Are checksum fields supported consistently, and where should checksums become
+  required?
+- Can installer scripts unexpectedly use sudo or inherit unsafe environment
+  values?
+- Are sudo symlinks impossible unless clearly configured and confirmed?
+- Is state written atomically, and does stale state fail safely?
+- Are error messages actionable without exposing sensitive environment values?
+- Are dry-run and apply paths close enough that dry-run is a trustworthy preview?
+- Are tests covering real failure modes, or only happy-path conversions?
+- Is the manifest schema still understandable after representing all tools?
+- Which old broad-bootstrap modules should be deleted, retained, or split out?
+
+Acceptance checks:
+
+- A hardening report exists in docs or the plan with concrete findings and
+  recommendations.
+- Each recommendation is classified as `must fix`, `should fix`, or `later`.
+- Must-fix findings are implemented or explicitly deferred with rationale.
+- The final implementation still passes the full verification suite after the
+  hardening changes.
 
 ## Verification Strategy
 
@@ -980,6 +1045,9 @@ Manual smoke after first working executor:
 - Tests pass for config decoding, version resolution, plan selection, and the
   first binary-tool executor path.
 - README points users to the new binary-distribution workflow.
+- The post-implementation review and hardening pass is complete, with
+  improvement suggestions documented and must-fix items handled or explicitly
+  deferred.
 
 ## Later Enhancements
 

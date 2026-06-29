@@ -1,467 +1,430 @@
-apiVersion: initkit.io/v1alpha1
-kind: WorkstationProfile
+apiVersion: binstaller.io/v1alpha1
+kind: BinaryDistributionProfile
 
 metadata:
-  name: developer-workstation
+  name: developer-binaries
   labels:
     role: development
-    owner: platform
+    platform: linux-amd64
   annotations:
-    initkit.io/description: Example package installation plan inspired by Kubernetes manifests.
+    binstaller.io/description: Binary tool installer converted from system-bootstrap/scripts/binary-dist.sh.
 
 spec:
-  # Informational metadata about the intended target system. A runner may show
-  # this to users, but install selection should still come from `when` rules.
-  target:
-    os:
-      family: linux
-      distribution: ubuntu
-      version: "24.04"
-      codename: noble
-      architecture: amd64
-      desktop: gnome
-
-  # Global behavior for every install step unless a step overrides it.
   policy:
     dryRun: false
     continueOnError: false
-    requireSudo: true
-    reboot:
-      allowed: false
-      prompt: true
+    appsDir: "${HOME}/.apps"
+    cleanInstall: true
+    requireConfirmation: true
+    allowSudoSymlinks: true
+    stateFile: developer-binaries.state.json
 
-  # Variables can be referenced by implementations as ${name}.
   vars:
-    user: "${USER}"
-    home: "${HOME}"
+    platform: linux
     arch: amd64
-    binDir: "${HOME}/.local/bin"
-    stateFile: "${HOME}/.local/state/initkit/developer-workstation.state.json"
-    dotfilesDir: "${HOME}/.dotfiles"
-    dotfilesConfig: "${HOME}/.dotfiles/.files/install.conf.yaml"
-    nerdFontConfig: "${HOME}/.config/nerd-config-installer/config.yaml"
-    nerdFontDir: "${HOME}/.local/share/fonts/NerdFonts"
+    linuxArch: x86_64
+    muslTarget: x86_64-unknown-linux-musl
+    gnuTarget: x86_64-unknown-linux-gnu
 
-  # Package-manager setup is separated from the ordered installation plan so
-  # repositories/remotes can be prepared before packages are installed.
-  sources:
-    apt:
-      repositories:
-        - name: docker
-          keyUrl: https://download.docker.com/linux/ubuntu/gpg
-          source: "deb [arch=amd64] https://download.docker.com/linux/ubuntu noble stable"
-      updateBeforeInstall: true
+  versions:
+    yazi: v26.5.6
+    zig: 0.15.2
+    kind: 0.31.0
+    zellij: 0.44.1
+    lazygit: 0.61.0
+    jujutsu: 0.40.0
+    dotbotGo: v0.3.0
+    nerdFontInstaller: v1.0.6
 
-    dnf:
-      repositories:
-        - name: vscode
-          description: Visual Studio Code
-          baseUrl: https://packages.microsoft.com/yumrepos/vscode
-          gpgKey: https://packages.microsoft.com/keys/microsoft.asc
+    minikube:
+      dynamic:
+        type: latest-url
+        note: Google Storage latest Linux amd64 binary endpoint.
 
-    zypper:
-      repositories:
-        - name: docker
-          url: https://download.docker.com/linux/sles/docker-ce.repo
-          autoRefresh: true
+    xplr:
+      dynamic:
+        type: latest-url
+        note: GitHub latest xplr Linux archive endpoint.
 
-    flatpak:
-      remotes:
-        - name: flathub
-          url: https://flathub.org/repo/flathub.flatpakrepo
-          ifMissing: true
+    helm:
+      dynamic:
+        type: latest-url
+        note: Helm upstream install script chooses the current release.
 
-  # Steps run top-to-bottom. Each entry has exactly one `kind`, so a runner can
-  # dispatch it to the correct installer. A runner may skip a step when its
-  # `when` selector does not match the current system.
+    kubectl:
+      resolver:
+        type: http-text
+        url: https://dl.k8s.io/release/stable.txt
+
+    kustomize:
+      dynamic:
+        type: latest-url
+        note: Kustomize upstream install script chooses the current release.
+
+    neovide:
+      dynamic:
+        type: latest-url
+        note: GitHub latest Neovide AppImage endpoint.
+
+    neovim:
+      dynamic:
+        type: latest-url
+        note: GitHub latest Neovim Linux x86_64 archive endpoint.
+
   plan:
-    - name: apt-base-cli
-      kind: apt-packages
-      description: Core terminal tools for Debian and Ubuntu systems.
-      execution:
-        mode: sequential
-        locks:
-          - system-package-manager
+    - name: yazi
+      kind: binary-tool
+      description: Terminal file manager.
       when:
         os:
           family: linux
-          distribution:
-            oneOf:
-              - debian
-              - ubuntu
+        architecture: amd64
       spec:
-        update: true
-        install:
-          - build-essential
-          - ca-certificates
-          - curl
-          - git
-          - gnupg
-          - jq
-          - unzip
-          - zsh
+        versionRef: yazi
+        installDir: "${appsDir}/yazi"
+        download:
+          url: "https://github.com/sxyazi/yazi/releases/download/${version}/yazi-${gnuTarget}.zip"
+          filename: yazi.zip
+          archive:
+            type: zip
+            extract:
+              files:
+                - from: "yazi-${gnuTarget}/yazi"
+                  to: bin/yazi
+                - from: "yazi-${gnuTarget}/ya"
+                  to: bin/ya
+        executables:
+          - path: bin/yazi
+          - path: bin/ya
 
-    - name: pacman-base-cli
-      kind: pacman-packages
-      description: Core terminal tools for Arch Linux systems.
-      execution:
-        mode: sequential
-        locks:
-          - system-package-manager
+    - name: zig
+      kind: binary-tool
+      description: Zig compiler and toolchain.
       when:
         os:
           family: linux
-          distribution: arch
+        architecture: amd64
       spec:
-        sync: true
-        install:
-          - base-devel
-          - ca-certificates
-          - curl
-          - git
-          - gnupg
-          - jq
-          - unzip
-          - zsh
+        versionRef: zig
+        installDir: "${appsDir}/zig"
+        download:
+          url: "https://ziglang.org/download/${version}/zig-${linuxArch}-linux-${version}.tar.xz"
+          filename: zig.tar.xz
+          archive:
+            type: tar.xz
+            extract:
+              directories:
+                - from: "zig-${linuxArch}-linux-${version}"
+                  to: "bin/zig-${linuxArch}-linux-${version}"
+        executables:
+          - path: "bin/zig-${linuxArch}-linux-${version}/zig"
+        symlinks:
+          - path: bin/zig
+            target: "bin/zig-${linuxArch}-linux-${version}/zig"
 
-    - name: dnf-base-cli
-      kind: dnf-packages
-      description: Core terminal tools for Fedora and RHEL-family systems.
-      execution:
-        mode: sequential
-        locks:
-          - system-package-manager
+    - name: minikube
+      kind: binary-tool
+      description: Local Kubernetes cluster runner.
       when:
         os:
           family: linux
-          distribution:
-            oneOf:
-              - fedora
-              - rhel
-              - centos
+        architecture: amd64
       spec:
-        install:
-          - "@development-tools"
-          - ca-certificates
-          - curl
-          - git
-          - gnupg2
-          - jq
-          - unzip
-          - zsh
+        versionRef: minikube
+        installDir: "${appsDir}/minikube"
+        download:
+          url: https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+          filename: minikube
+        executables:
+          - path: bin/minikube
 
-    - name: zypper-base-cli
-      kind: zypper-packages
-      description: Core terminal tools for openSUSE and SUSE systems.
-      execution:
-        mode: sequential
-        locks:
-          - system-package-manager
+    - name: xplr
+      kind: binary-tool
+      description: Terminal file explorer.
       when:
         os:
           family: linux
-          distribution:
-            oneOf:
-              - opensuse
-              - sles
+        architecture: amd64
       spec:
-        refresh: true
-        install:
-          - patterns-devel-base-devel_basis
-          - ca-certificates
-          - curl
-          - git
-          - gpg2
-          - jq
-          - unzip
-          - zsh
+        versionRef: xplr
+        installDir: "${appsDir}/xplr"
+        download:
+          url: https://github.com/sayanarijit/xplr/releases/latest/download/xplr-linux.tar.gz
+          filename: xplr-linux.tar.gz
+          archive:
+            type: tar.gz
+            extract:
+              files:
+                - from: xplr
+                  to: bin/xplr
+        executables:
+          - path: bin/xplr
 
-    - name: relogin-after-shell-install
-      kind: interrupt
-      description: Stop after shell packages are installed so the user can log out and continue later.
-      execution:
-        mode: sequential
-      spec:
-        reason: zsh and other login-shell tools were installed. Log out and back in before continuing.
-        state:
-          path: "${stateFile}"
-          format: json
-          resumeFrom: next
-        instructions:
-          - Close this terminal session.
-          - Log out of the desktop session, or reboot if that is simpler.
-          - Log back in and continue with the saved state file.
-          - "Run: initkit apply --config config.example.yaml --state ${stateFile}"
-        exit:
-          code: 75
-          message: Bootstrap paused. Re-run with --state to continue from the next plan entry.
-
-    - name: apt-containers
-      kind: apt-packages
-      description: Container runtime packages for Debian and Ubuntu systems.
-      execution:
-        mode: sequential
-        locks:
-          - system-package-manager
+    - name: kind
+      kind: binary-tool
+      description: Kubernetes in Docker.
       when:
         os:
           family: linux
-          distribution:
-            oneOf:
-              - debian
-              - ubuntu
+        architecture: amd64
       spec:
-        install:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-          - docker-buildx-plugin
-          - docker-compose-plugin
+        versionRef: kind
+        installDir: "${appsDir}/kind"
+        download:
+          url: "https://kind.sigs.k8s.io/dl/v${version}/kind-linux-amd64"
+          filename: kind
+        executables:
+          - path: bin/kind
 
-    - name: pacman-containers
-      kind: pacman-packages
-      description: Container runtime packages for Arch Linux systems.
-      execution:
-        mode: sequential
-        locks:
-          - system-package-manager
+    - name: zellij
+      kind: binary-tool
+      description: Terminal workspace and multiplexer.
       when:
         os:
           family: linux
-          distribution: arch
+        architecture: amd64
       spec:
-        install:
-          - docker
-          - docker-buildx
-          - docker-compose
+        versionRef: zellij
+        installDir: "${appsDir}/zellij"
+        download:
+          url: "https://github.com/zellij-org/zellij/releases/download/v${version}/zellij-${muslTarget}.tar.gz"
+          filename: zellij.tar.gz
+          archive:
+            type: tar.gz
+            extract:
+              files:
+                - from: zellij
+                  to: bin/zellij
+        executables:
+          - path: bin/zellij
 
-    - name: dnf-containers
-      kind: dnf-packages
-      description: Container runtime packages for Fedora and RHEL-family systems.
-      execution:
-        mode: sequential
-        locks:
-          - system-package-manager
+    - name: helm
+      kind: binary-tool
+      description: Kubernetes package manager.
       when:
         os:
           family: linux
-          distribution:
-            oneOf:
-              - fedora
-              - rhel
-              - centos
+        architecture: amd64
       spec:
-        install:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-          - docker-buildx-plugin
-          - docker-compose-plugin
-
-    - name: zypper-containers
-      kind: zypper-packages
-      description: Container runtime packages for openSUSE and SUSE systems.
-      execution:
-        mode: sequential
-        locks:
-          - system-package-manager
-      when:
-        os:
-          family: linux
-          distribution:
-            oneOf:
-              - opensuse
-              - sles
-      spec:
-        install:
-          - docker-ce
-          - docker-ce-cli
-          - containerd.io
-
-    - name: flatpak-desktop-apps
-      kind: flatpak-packages
-      description: User-facing applications installed through Flatpak.
-      execution:
-        mode: sequential
-        locks:
-          - desktop-package-manager
-      spec:
-        remote: flathub
-        system: true
-        install:
-          - com.slack.Slack
-          - com.spotify.Client
-          - org.mozilla.firefox
-
-    - name: snap-desktop-apps
-      kind: snap-packages
-      description: User-facing applications installed through Snap.
-      execution:
-        mode: sequential
-        locks:
-          - desktop-package-manager
-      spec:
-        install:
-          - name: code
-            classic: true
-          - name: postman
-
-    - name: direct-binaries
-      kind: binary-downloads
-      description: Download standalone binaries and place them on PATH.
-      execution:
-        mode: parallel
-        maxConcurrency: 4
-        failFast: true
-      spec:
-        items:
-          - name: kubectl
-            url: https://dl.k8s.io/release/v1.30.2/bin/linux/amd64/kubectl
-            destination: "${binDir}/kubectl"
-            mode: "0755"
-            checksum:
-              algorithm: sha256
-              value: replace-with-real-kubectl-sha256
-
-          - name: helm
-            url: https://get.helm.sh/helm-v3.15.2-linux-amd64.tar.gz
-            archive:
-              type: tar.gz
-              stripComponents: 1
-              path: linux-amd64/helm
-            destination: "${binDir}/helm"
-            mode: "0755"
-            checksum:
-              algorithm: sha256
-              value: replace-with-real-helm-sha256
-
-          - name: dotbot-go
-            url: https://github.com/worxbend/dotbot-go/releases/download/v0.3.0/dotbot-linux-amd64.tar.gz
-            archive:
-              type: tar.gz
-              path: dotbot
-            destination: "${binDir}/dotbot-go"
-            mode: "0755"
-            checksum:
-              algorithm: sha256
-              value: 45d49e064d8684926fed97ad051c6ecebbf796a3c709edaa7a4a166b2978633d
-
-          - name: nerdfont-install
-            url: https://github.com/worxbend/nerd-font-installer/releases/download/v1.0.5/nerdfont-install_v1.0.5_linux_amd64.tar.gz
-            archive:
-              type: tar.gz
-              stripComponents: 1
-              path: nerdfont-install_v1.0.5_linux_amd64/nerdfont-install
-            destination: "${binDir}/nerdfont-install"
-            mode: "0755"
-            checksum:
-              algorithm: sha256
-              value: f26cf063b7c99b7c2d50a49cd4eb5790c795c2d0f96e7838969b85fd6e4d177d
-
-    - name: language-toolchains
-      kind: shell-scripts
-      description: Run official shell installers after OS dependencies exist.
-      execution:
-        mode: sequential
-        locks:
-          - user-toolchain
-      spec:
-        items:
-          - name: rustup
-            url: https://sh.rustup.rs
-            shell: sh
-            args:
-              - -s
-              - --
-              - -y
-              - --default-toolchain
-              - stable
-            creates: "${home}/.cargo/bin/rustc"
-
-          - name: miniforge
-            url: https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
-            shell: bash
-            args:
-              - -b
-              - -p
-              - "${home}/miniforge3"
-            creates: "${home}/miniforge3/bin/conda"
-
-    - name: install-nerd-fonts
-      kind: nerd-fonts
-      description: Install selected Nerd Fonts through the nerdfont-install binary.
-      execution:
-        mode: sequential
-        locks:
-          - user-fonts
-      spec:
-        tool:
-          path: "${binDir}/nerdfont-install"
+        versionRef: helm
+        installDir: "${appsDir}/helm"
+        createDirectories:
+          - bin
+        download:
+          url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          filename: get_helm.sh
+        installer:
+          shell: sh
           args:
-            - -config
-            - "${nerdFontConfig}"
-        config:
-          path: "${nerdFontConfig}"
-          create: true
-          content:
-            release: latest
-            destination: "${nerdFontDir}"
-            refresh_font_cache: true
-            families:
-              - JetBrainsMono
-              - Hack
-              - FiraCode
-              - Meslo
-        preview:
-          enabled: true
-          args:
-            - -dry-run
+            - "${downloadPath}"
+          env:
+            - name: USE_SUDO
+              value: "false"
+            - name: HELM_INSTALL_DIR
+              value: "${appsDir}/helm/bin"
+          cleanup: true
+        executables:
+          - path: bin/helm
 
-    - name: apply-dotfiles
-      kind: dotfiles-apply
-      description: Apply personal dotfiles through the dotbot-go binary.
-      execution:
-        mode: sequential
-        locks:
-          - user-home
+    - name: kubectl
+      kind: binary-tool
+      description: Kubernetes command-line client.
+      when:
+        os:
+          family: linux
+        architecture: amd64
       spec:
-        tool:
-          path: "${binDir}/dotbot-go"
-          args:
-            - -d
-            - "${dotfilesDir}"
-            - -c
-            - "${dotfilesConfig}"
-        repository:
-          url: https://github.com/w0rxbend/system-bootstrap.git
-          ref: main
-          destination: "${dotfilesDir}"
-          update: true
-        config:
-          path: "${dotfilesConfig}"
-          sourceUrl: https://github.com/w0rxbend/system-bootstrap/blob/main/.files/install.conf.yaml
-        preview:
-          enabled: true
-          args:
-            - --dry-run
+        versionRef: kubectl
+        installDir: "${appsDir}/kubectl"
+        download:
+          url: "https://dl.k8s.io/release/${version}/bin/linux/amd64/kubectl"
+          filename: kubectl
+        executables:
+          - path: bin/kubectl
 
-    - name: post-install
-      kind: commands
-      description: Commands that must run after all packages and installers.
-      execution:
-        mode: sequential
+    - name: kustomize
+      kind: binary-tool
+      description: Kubernetes manifest customization tool.
+      when:
+        os:
+          family: linux
+        architecture: amd64
       spec:
-        items:
-          - name: enable-docker
-            run: systemctl enable --now docker
+        versionRef: kustomize
+        installDir: "${appsDir}/kustomize"
+        createDirectories:
+          - bin
+        download:
+          url: https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh
+          filename: install_kustomize.sh
+        installer:
+          shell: sh
+          args:
+            - "${downloadPath}"
+            - "${appsDir}/kustomize/bin"
+          cleanup: true
+        executables:
+          - path: bin/kustomize
+
+    - name: neovide
+      kind: binary-tool
+      description: Graphical Neovim frontend.
+      when:
+        os:
+          family: linux
+        architecture: amd64
+      spec:
+        versionRef: neovide
+        installDir: "${appsDir}/neovide"
+        download:
+          url: https://github.com/neovide/neovide/releases/latest/download/neovide.AppImage
+          filename: neovide
+        executables:
+          - path: bin/neovide
+
+    - name: neovim
+      kind: binary-tool
+      description: Neovim editor binary distribution.
+      when:
+        os:
+          family: linux
+        architecture: amd64
+      spec:
+        versionRef: neovim
+        installDir: "${appsDir}/neovim"
+        download:
+          url: https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz
+          filename: neovim.tar.gz
+          archive:
+            type: tar.gz
+            extract:
+              directories:
+                - from: nvim-linux-x86_64
+                  to: "."
+        executables:
+          - path: bin/nvim
+        symlinks:
+          - path: bin/neovim
+            target: bin/nvim
+          - path: bin/vim
+            target: bin/nvim
+          - path: /usr/local/bin/neovim
+            target: "${appsDir}/neovim/bin/nvim"
             sudo: true
-            when:
-              commandExists: systemctl
-
-          - name: add-user-to-docker-group
-            run: "usermod -aG docker ${user}"
+          - path: /usr/local/bin/vim
+            target: "${appsDir}/neovim/bin/nvim"
+            sudo: true
+          - path: /usr/local/bin/nvim
+            target: "${appsDir}/neovim/bin/nvim"
+            sudo: true
+          - path: /usr/bin/nvim
+            target: "${appsDir}/neovim/bin/nvim"
+            sudo: true
+          - path: /usr/bin/neovim
+            target: "${appsDir}/neovim/bin/nvim"
             sudo: true
 
-          - name: ensure-local-bin
-            run: "mkdir -p ${binDir}"
-            sudo: false
+    - name: lazygit
+      kind: binary-tool
+      description: Terminal UI for Git.
+      when:
+        os:
+          family: linux
+        architecture: amd64
+      spec:
+        versionRef: lazygit
+        installDir: "${appsDir}/lazygit"
+        download:
+          url: "https://github.com/jesseduffield/lazygit/releases/download/v${version}/lazygit_${version}_Linux_x86_64.tar.gz"
+          filename: lazygit.tar.gz
+          archive:
+            type: tar.gz
+            extract:
+              files:
+                - from: lazygit
+                  to: bin/lazygit
+        executables:
+          - path: bin/lazygit
+        symlinks:
+          - path: bin/lzg
+            target: bin/lazygit
+
+    - name: jujutsu
+      kind: binary-tool
+      description: Jujutsu version control system.
+      when:
+        os:
+          family: linux
+        architecture: amd64
+      spec:
+        versionRef: jujutsu
+        installDir: "${appsDir}/jujutsu"
+        download:
+          url: "https://github.com/jj-vcs/jj/releases/download/v${version}/jj-v${version}-${muslTarget}.tar.gz"
+          filename: jj.tar.gz
+          archive:
+            type: tar.gz
+            extract:
+              files:
+                - from: jj
+                  to: bin/jj
+        executables:
+          - path: bin/jj
+        symlinks:
+          - path: bin/jj-scm
+            target: bin/jj
+          - path: bin/jujutsu
+            target: bin/jj
+
+    - name: dotbot
+      kind: binary-tool
+      description: Worxbend Go implementation of Dotbot.
+      when:
+        os:
+          family: linux
+        architecture: amd64
+      spec:
+        versionRef: dotbotGo
+        installDir: "${appsDir}/dotbot"
+        download:
+          url: "https://github.com/worxbend/dotbot-go/releases/download/${version}/dotbot-linux-amd64.tar.gz"
+          filename: dotbot-go.tar.gz
+          checksum:
+            algorithm: sha256
+            value: 45d49e064d8684926fed97ad051c6ecebbf796a3c709edaa7a4a166b2978633d
+          archive:
+            type: tar.gz
+            extract:
+              files:
+                - from: dotbot
+                  to: bin/dotbot
+        executables:
+          - path: bin/dotbot
+
+    - name: nerd-font-installer
+      kind: binary-tool
+      description: Worxbend Nerd Fonts installer.
+      when:
+        os:
+          family: linux
+        architecture: amd64
+      spec:
+        versionRef: nerdFontInstaller
+        installDir: "${appsDir}/nerd-font-installer"
+        download:
+          url: "https://github.com/worxbend/nerd-font-installer/releases/download/${version}/nerdfont-install_${version}_linux_amd64.tar.gz"
+          filename: nerd-font-installer.tar.gz
+          checksum:
+            algorithm: sha256
+            value: 25c70bcf327930282823fa6abecc54f14f53fb44b01f988187a07218b711a1a7
+          archive:
+            type: tar.gz
+            extract:
+              files:
+                - from: "nerdfont-install_${version}_linux_amd64/nerdfont-install"
+                  to: bin/nerdfont-install
+        executables:
+          - path: bin/nerdfont-install
+        symlinks:
+          - path: bin/nerd-font-installer
+            target: bin/nerdfont-install
