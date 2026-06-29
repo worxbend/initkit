@@ -205,6 +205,14 @@ kind: BinaryDistributionProfile
   rows, and final summary. `apply --dry-run --tui` renders the exact dry-run
   operation lines from the non-interactive apply renderer in a static execution
   frame without creating install or state paths.
+- 2026-06-29: T008 / VALIDATION-31 checkpoint passed for automated
+  project-native validation. Config, core, CLI, recursive compile, recursive
+  tests including TUI, app-level `--help`, `plan`, `apply --dry-run`,
+  `versions`, static `plan --tui`, static `apply --dry-run --tui`, scalafmt,
+  Mill module resolution, task JSON validation, and git whitespace checks all
+  passed. Live raw-terminal smoke coverage for Ctrl+C, `q`, resize, mouse, and
+  narrow-terminal behavior remains blocked in this agent shell because stdin is
+  not an interactive TTY.
 
 ## Current Agent Loop State
 
@@ -240,8 +248,8 @@ The next agent loop should execute this ordered pending queue:
 - T004: Checkpoint TUI foundation - validate the module shell and event model before terminal rendering work.
 - T005: Render planning TUI - completed deterministic header, plan table, details, logs, footer, keybar, colors, truncation, and renderer/model tests.
 - T006: Add TUI navigation - completed focus cycling, selection movement, log/detail scrolling, filtering, help, resize handling, and clean quit.
-- T007: Render execution TUI - implement the active apply screen with spinner/progress, recent logs, completed/failed rows, and terminal cleanup.
-- T008: Checkpoint TUI experience - run full validation and manual terminal smoke checks after the TUI is usable.
+- T007: Render execution TUI - completed the active apply screen with spinner/progress, recent logs, completed/failed rows, dry-run operation fidelity, and terminal cleanup tests.
+- T008: Checkpoint TUI experience - automated validation passed; live raw-terminal smoke remains blocked until a real interactive TTY is available.
 - T009: Document TUI smoke workflow - write durable no-network, narrow-terminal, resize, focus, scroll, execution, and cleanup smoke instructions.
 - T010: Review post-TUI readiness - perform the mandatory architecture, security, maintainability, test, and native-image review under `docs/`.
 - T011: Fix must-fix readiness issues - implement or explicitly defer every must-fix review finding with regression tests.
