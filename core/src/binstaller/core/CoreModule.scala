@@ -23,9 +23,17 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.PosixFilePermission
+import java.security.MessageDigest
+import scala.jdk.CollectionConverters.*
 import scala.util.Failure
 import scala.util.Success
 import scala.util.Try
+import scala.util.Using
 import scala.util.matching.Regex
 
 object CoreModule:
@@ -74,7 +82,16 @@ object BinaryInstallerService:
   def placeholder: BinaryInstallerService = PlaceholderBinaryInstallerService
 
   def resolving(httpTextClient: HttpTextClient): BinaryInstallerService =
-    ResolvingBinaryInstallerService(httpTextClient, ResolutionOptions.fromEnvironment())
+    resolving(httpTextClient, DirectBinaryInstaller.default)
+
+  def resolving(
+      httpTextClient: HttpTextClient,
+      installer: DirectBinaryInstaller
+  ): BinaryInstallerService = ResolvingBinaryInstallerService(
+    httpTextClient,
+    ResolutionOptions.fromEnvironment(),
+    installer
+  )
 
 final case class ResolutionOptions(runtimeVariables: Map[String, String])
 
@@ -88,6 +105,14 @@ trait HttpTextClient:
 
 object HttpTextClient:
   def jdk: HttpTextClient = JdkHttpTextClient(HttpClient.newHttpClient())
+
+final case class BinaryDownloadError(url: String, message: String)
+
+trait BinaryDownloadClient:
+  def download(url: String): Either[BinaryDownloadError, Array[Byte]]
+
+object BinaryDownloadClient:
+  def jdk: BinaryDownloadClient = JdkBinaryDownloadClient(HttpClient.newHttpClient())
 
 final case class ResolvedPlan(
     policy: ResolvedPolicy,
@@ -151,6 +176,195 @@ enum ResolvePlanError:
   case ValidationFailed(errors: Vector[ValidationError])
   case SelectionFailed(messages: Vector[String])
 
+final case class ToolInstallSuccess(toolName: String, installDir: String)
+
+enum ToolInstallError:
+  case DownloadFailed(toolName: String, url: String, message: String)
+  case ChecksumMismatch(toolName: String, expected: String, actual: String)
+  case StagingFailed(toolName: String, message: String)
+  case ModeApplicationFailed(toolName: String, path: String, mode: String, message: String)
+  case ReplacementFailed(toolName: String, message: String)
+  case UnsupportedArchive(toolName: String)
+  case UnsupportedInstaller(toolName: String)
+  case MissingExecutable(toolName: String)
+
+final case class ExecutableInstallMode(octal: String, numeric: Int):
+
+  def permissions: Set[PosixFilePermission] =
+    val ownerRead    = permission(PosixFilePermission.OWNER_READ, 0x100)
+    val ownerWrite   = permission(PosixFilePermission.OWNER_WRITE, 0x080)
+    val ownerExecute = permission(PosixFilePermission.OWNER_EXECUTE, 0x040)
+    val groupRead    = permission(PosixFilePermission.GROUP_READ, 0x020)
+    val groupWrite   = permission(PosixFilePermission.GROUP_WRITE, 0x010)
+    val groupExecute = permission(PosixFilePermission.GROUP_EXECUTE, 0x008)
+    val otherRead    = permission(PosixFilePermission.OTHERS_READ, 0x004)
+    val otherWrite   = permission(PosixFilePermission.OTHERS_WRITE, 0x002)
+    val otherExecute = permission(PosixFilePermission.OTHERS_EXECUTE, 0x001)
+
+    Vector(
+      ownerRead,
+      ownerWrite,
+      ownerExecute,
+      groupRead,
+      groupWrite,
+      groupExecute,
+      otherRead,
+      otherWrite,
+      otherExecute
+    ).flatten.toSet
+
+  private def permission(
+      permission: PosixFilePermission,
+      bit: Int
+  ): Option[PosixFilePermission] = if (numeric & bit) == bit then Some(permission) else None
+
+object ExecutableInstallMode:
+  val default: ExecutableInstallMode = fromOctal("0755")
+
+  def fromConfig(mode: Option[ExecutableMode]): ExecutableInstallMode = mode match
+    case Some(value) => fromOctal(value.value)
+    case None        => default
+
+  private def fromOctal(value: String): ExecutableInstallMode =
+    ExecutableInstallMode(value, Integer.parseInt(value, 8))
+
+final case class ExecutableModeRequest(path: String, mode: ExecutableInstallMode)
+
+final case class StagedInstall(stagingDir: Path, installDir: Path)
+
+enum InstallFileSystemError:
+  case StagingFailed(message: String)
+  case ModeApplicationFailed(path: String, mode: String, message: String)
+  case ReplacementFailed(message: String)
+
+trait InstallFileSystem:
+
+  def stageDirectBinary(
+      installDir: Path,
+      createDirectories: Vector[String],
+      executablePath: String,
+      bytes: Array[Byte]
+  ): Either[InstallFileSystemError.StagingFailed, StagedInstall]
+
+  def applyExecutableModes(
+      stagedInstall: StagedInstall,
+      executables: Vector[ExecutableModeRequest]
+  ): Either[InstallFileSystemError.ModeApplicationFailed, Unit]
+
+  def replaceInstall(
+      stagedInstall: StagedInstall
+  ): Either[InstallFileSystemError.ReplacementFailed, Unit]
+
+  def discardStaged(stagedInstall: StagedInstall): Unit
+
+object InstallFileSystem:
+  def nio: InstallFileSystem = NioInstallFileSystem
+
+final class DirectBinaryInstaller(
+    downloadClient: BinaryDownloadClient,
+    fileSystem: InstallFileSystem
+):
+
+  def installPlan(plan: ResolvedPlan): InstallerResult =
+    val results = installTools(plan.tools)
+    val lines   = results.map:
+      case Right(success) => s"installed ${success.toolName} to ${success.installDir}"
+      case Left(error)    => s"failed ${toolName(error)}: ${renderInstallError(error)}"
+    val exitCode = if results.exists(_.isLeft) then 1 else 0
+
+    InstallerResult(lines, exitCode)
+
+  private def installTools(
+      tools: Vector[ResolvedTool]
+  ): Vector[Either[ToolInstallError, ToolInstallSuccess]] = tools.headOption match
+    case None       => Vector.empty
+    case Some(tool) =>
+      val result = installTool(tool)
+      result match
+        case Left(_)  => Vector(result)
+        case Right(_) => result +: installTools(tools.tail)
+
+  def installTool(tool: ResolvedTool): Either[ToolInstallError, ToolInstallSuccess] =
+    if tool.download.archive.nonEmpty then Left(ToolInstallError.UnsupportedArchive(tool.name))
+    else if tool.installer.nonEmpty then Left(ToolInstallError.UnsupportedInstaller(tool.name))
+    else
+      tool.executables.headOption match
+        case None                  => Left(ToolInstallError.MissingExecutable(tool.name))
+        case Some(firstExecutable) =>
+          for
+            bytes  <- download(tool)
+            _      <- verifyChecksum(tool, bytes)
+            staged <- stage(tool, firstExecutable.path, bytes)
+            _      <- applyModes(tool, staged)
+            _      <- replace(tool, staged)
+          yield ToolInstallSuccess(tool.name, tool.installDir)
+
+  private def download(tool: ResolvedTool): Either[ToolInstallError, Array[Byte]] =
+    downloadClient.download(tool.download.url).left.map: error =>
+      ToolInstallError.DownloadFailed(tool.name, error.url, error.message)
+
+  private def verifyChecksum(
+      tool: ResolvedTool,
+      bytes: Array[Byte]
+  ): Either[ToolInstallError, Unit] = tool.download.checksum match
+    case None           => Right(())
+    case Some(checksum) =>
+      val actual = Sha256.digest(bytes)
+      if actual.equalsIgnoreCase(checksum.value) then Right(())
+      else Left(ToolInstallError.ChecksumMismatch(tool.name, checksum.value, actual))
+
+  private def stage(
+      tool: ResolvedTool,
+      executablePath: String,
+      bytes: Array[Byte]
+  ): Either[ToolInstallError, StagedInstall] = fileSystem
+    .stageDirectBinary(Path.of(tool.installDir), tool.createDirectories, executablePath, bytes)
+    .left
+    .map(error => ToolInstallError.StagingFailed(tool.name, error.message))
+
+  private def applyModes(
+      tool: ResolvedTool,
+      stagedInstall: StagedInstall
+  ): Either[ToolInstallError, Unit] =
+    val modes = tool.executables.map: executable =>
+      ExecutableModeRequest(executable.path, ExecutableInstallMode.fromConfig(executable.mode))
+
+    fileSystem.applyExecutableModes(stagedInstall, modes).left.map: error =>
+      ToolInstallError.ModeApplicationFailed(tool.name, error.path, error.mode, error.message)
+
+  private def replace(
+      tool: ResolvedTool,
+      stagedInstall: StagedInstall
+  ): Either[ToolInstallError, Unit] = fileSystem.replaceInstall(stagedInstall).left.map: error =>
+    ToolInstallError.ReplacementFailed(tool.name, error.message)
+
+  private def toolName(error: ToolInstallError): String = error match
+    case ToolInstallError.DownloadFailed(toolName, _, _)           => toolName
+    case ToolInstallError.ChecksumMismatch(toolName, _, _)         => toolName
+    case ToolInstallError.StagingFailed(toolName, _)               => toolName
+    case ToolInstallError.ModeApplicationFailed(toolName, _, _, _) => toolName
+    case ToolInstallError.ReplacementFailed(toolName, _)           => toolName
+    case ToolInstallError.UnsupportedArchive(toolName)             => toolName
+    case ToolInstallError.UnsupportedInstaller(toolName)           => toolName
+    case ToolInstallError.MissingExecutable(toolName)              => toolName
+
+  private def renderInstallError(error: ToolInstallError): String = error match
+    case ToolInstallError.DownloadFailed(_, url, message) => s"download failed for $url: $message"
+    case ToolInstallError.ChecksumMismatch(_, expected, actual) =>
+      s"sha256 checksum mismatch: expected $expected, got $actual"
+    case ToolInstallError.StagingFailed(_, message) => s"staging failed: $message"
+    case ToolInstallError.ModeApplicationFailed(_, path, mode, message) =>
+      s"mode $mode failed for $path: $message"
+    case ToolInstallError.ReplacementFailed(_, message) => s"replacement failed: $message"
+    case ToolInstallError.UnsupportedArchive(_)   => "archive extraction is not implemented yet"
+    case ToolInstallError.UnsupportedInstaller(_) => "installer execution is not implemented yet"
+    case ToolInstallError.MissingExecutable(_)    => "no executable path is configured"
+
+object DirectBinaryInstaller:
+
+  def default: DirectBinaryInstaller =
+    DirectBinaryInstaller(BinaryDownloadClient.jdk, NioInstallFileSystem)
+
 object PlanResolver:
 
   def resolve(
@@ -177,7 +391,8 @@ private object PlaceholderBinaryInstallerService extends BinaryInstallerService:
 
 private final class ResolvingBinaryInstallerService(
     httpTextClient: HttpTextClient,
-    resolutionOptions: ResolutionOptions
+    resolutionOptions: ResolutionOptions,
+    installer: DirectBinaryInstaller
 ) extends BinaryInstallerService:
 
   def plan(options: InstallerOptions): InstallerResult =
@@ -186,11 +401,7 @@ private final class ResolvingBinaryInstallerService(
   def apply(options: InstallerOptions): InstallerResult =
     if options.dryRun == DryRunMode.Enabled then
       renderSelectedPlan(options, PlanRenderCommand.ApplyDryRun)
-    else
-      InstallerResult(
-        Vector("apply execution is not implemented yet"),
-        1
-      )
+    else resolveSelectedPlan(options).fold(renderError, installer.installPlan)
 
   def versions(options: InstallerOptions): InstallerResult =
     resolveFromOptions(options).fold(renderError, renderVersions)
@@ -726,3 +937,178 @@ private final class JdkHttpTextClient(client: HttpClient) extends HttpTextClient
         Right(response.body())
       case Success(response) => Left(HttpTextError(url, s"HTTP ${response.statusCode()}"))
       case Failure(error)    => Left(HttpTextError(url, error.getMessage))
+
+private final class JdkBinaryDownloadClient(client: HttpClient) extends BinaryDownloadClient:
+
+  def download(url: String): Either[BinaryDownloadError, Array[Byte]] =
+    val request = HttpRequest.newBuilder(URI.create(url)).GET().build()
+    Try(client.send(request, HttpResponse.BodyHandlers.ofByteArray())) match
+      case Success(response) if response.statusCode() >= 200 && response.statusCode() < 300 =>
+        Right(response.body())
+      case Success(response) => Left(BinaryDownloadError(url, s"HTTP ${response.statusCode()}"))
+      case Failure(error)    => Left(BinaryDownloadError(url, error.getMessage))
+
+private object Sha256:
+
+  def digest(bytes: Array[Byte]): String =
+    val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+    digest.map(byte => f"${byte & 0xff}%02x").mkString
+
+private object NioInstallFileSystem extends InstallFileSystem:
+
+  def stageDirectBinary(
+      installDir: Path,
+      createDirectories: Vector[String],
+      executablePath: String,
+      bytes: Array[Byte]
+  ): Either[InstallFileSystemError.StagingFailed, StagedInstall] =
+    val normalizedInstallDir = installDir.toAbsolutePath.normalize()
+    createStagingDirectory(normalizedInstallDir).flatMap: stagedInstall =>
+      writeStagedDirectBinary(stagedInstall, createDirectories, executablePath, bytes) match
+        case Right(())   => Right(stagedInstall)
+        case Left(error) =>
+          discardStaged(stagedInstall)
+          Left(error)
+
+  def applyExecutableModes(
+      stagedInstall: StagedInstall,
+      executables: Vector[ExecutableModeRequest]
+  ): Either[InstallFileSystemError.ModeApplicationFailed, Unit] =
+    val errors: Vector[Either[InstallFileSystemError.ModeApplicationFailed, Unit]] =
+      executables.map(applyExecutableMode(stagedInstall, _))
+
+    errors.collectFirst:
+      case Left(error) => error
+    match
+      case Some(error) =>
+        discardStaged(stagedInstall)
+        Left(error)
+      case None => Right(())
+
+  def replaceInstall(
+      stagedInstall: StagedInstall
+  ): Either[InstallFileSystemError.ReplacementFailed, Unit] =
+    replaceInstallDirectory(stagedInstall) match
+      case Right(())   => Right(())
+      case Left(error) =>
+        discardStaged(stagedInstall)
+        Left(error)
+
+  def discardStaged(stagedInstall: StagedInstall): Unit =
+    deleteRecursively(stagedInstall.stagingDir)
+
+  private def createStagingDirectory(
+      installDir: Path
+  ): Either[InstallFileSystemError.StagingFailed, StagedInstall] = Try:
+    val parent = Option(installDir.getParent).getOrElse(Path.of("").toAbsolutePath.normalize())
+    val _      = Files.createDirectories(parent)
+    val prefix = s".${Option(installDir.getFileName).map(_.toString).getOrElse("install")}.stage-"
+    StagedInstall(Files.createTempDirectory(parent, prefix), installDir)
+  match
+    case Success(stagedInstall) => Right(stagedInstall)
+    case Failure(error)         => Left(InstallFileSystemError.StagingFailed(error.getMessage))
+
+  private def writeStagedDirectBinary(
+      stagedInstall: StagedInstall,
+      createDirectories: Vector[String],
+      executablePath: String,
+      bytes: Array[Byte]
+  ): Either[InstallFileSystemError.StagingFailed, Unit] =
+    val directoryWrites: Vector[Either[String, Unit]] = createDirectories.map: directory =>
+      resolveInside(stagedInstall.stagingDir, directory).flatMap: path =>
+        Try(Files.createDirectories(path)) match
+          case Success(_)     => Right(())
+          case Failure(error) => Left(error.getMessage)
+
+    val binaryWrite: Either[String, Unit] =
+      resolveInside(stagedInstall.stagingDir, executablePath).flatMap: path =>
+        writeBinary(path, bytes)
+
+    val failures = (directoryWrites :+ binaryWrite).flatMap(stagingFailure)
+
+    failures.headOption match
+      case Some(error) => Left(error)
+      case None        => Right(())
+
+  private def stagingFailure(
+      result: Either[String, Unit]
+  ): Option[InstallFileSystemError.StagingFailed] = result match
+    case Left(message) => Some(InstallFileSystemError.StagingFailed(message))
+    case Right(())     => None
+
+  private def applyExecutableMode(
+      stagedInstall: StagedInstall,
+      executable: ExecutableModeRequest
+  ): Either[InstallFileSystemError.ModeApplicationFailed, Unit] =
+    val executablePath = stagedInstall.stagingDir.resolve(executable.path).normalize()
+    if !executablePath.startsWith(stagedInstall.stagingDir) then
+      Left(
+        InstallFileSystemError.ModeApplicationFailed(
+          executable.path,
+          executable.mode.octal,
+          "path escapes staging directory"
+        )
+      )
+    else
+      Try(
+        Files.setPosixFilePermissions(executablePath, executable.mode.permissions.asJava)
+      ) match
+        case Success(_)     => Right(())
+        case Failure(error) => Left(
+            InstallFileSystemError.ModeApplicationFailed(
+              executable.path,
+              executable.mode.octal,
+              error.getMessage
+            )
+          )
+
+  private def writeBinary(path: Path, bytes: Array[Byte]): Either[String, Unit] = Try:
+    Option(path.getParent).foreach: parent =>
+      Files.createDirectories(parent)
+    val _ = Files.write(
+      path,
+      bytes,
+      StandardOpenOption.CREATE,
+      StandardOpenOption.TRUNCATE_EXISTING,
+      StandardOpenOption.WRITE
+    )
+  match
+    case Success(_)     => Right(())
+    case Failure(error) => Left(error.getMessage)
+
+  private def resolveInside(root: Path, relative: String): Either[String, Path] =
+    val input = Path.of(relative)
+    if input.isAbsolute then Left(s"path must be relative: $relative")
+    else
+      val resolved = root.resolve(input).normalize()
+      if resolved.startsWith(root) then Right(resolved)
+      else Left(s"path escapes staging directory: $relative")
+
+  private def replaceInstallDirectory(
+      stagedInstall: StagedInstall
+  ): Either[InstallFileSystemError.ReplacementFailed, Unit] =
+    val installDir = stagedInstall.installDir
+    val parent     = Option(installDir.getParent).getOrElse(Path.of("").toAbsolutePath.normalize())
+    val backupPrefix =
+      s".${Option(installDir.getFileName).map(_.toString).getOrElse("install")}.backup-"
+
+    Try:
+      val backupDir = Files.createTempDirectory(parent, backupPrefix)
+      Files.delete(backupDir)
+      if Files.exists(installDir) then
+        val _ = Files.move(installDir, backupDir, StandardCopyOption.REPLACE_EXISTING)
+      val _ = Files.move(stagedInstall.stagingDir, installDir, StandardCopyOption.REPLACE_EXISTING)
+      deleteRecursively(backupDir)
+    match
+      case Success(_)     => Right(())
+      case Failure(error) => Left(InstallFileSystemError.ReplacementFailed(error.getMessage))
+
+  private def deleteRecursively(path: Path): Unit = if Files.exists(path) then
+    Using.resource(Files.walk(path)): stream =>
+      stream
+        .iterator()
+        .asScala
+        .toVector
+        .sortBy(_.getNameCount)
+        .reverse
+        .foreach(child => Try(Files.deleteIfExists(child)))

@@ -71,6 +71,14 @@ kind: BinaryDistributionProfile
   `app.run plan --config config.example.yaml`, and isolated temporary-apps
   no-write smoke checks completed successfully. No source fixes were required
   before filesystem-changing executor work begins.
+- 2026-06-29: T008 completed direct binary apply execution. Core now has typed
+  download and filesystem staging boundaries, sha256 verification before
+  staging replacement, direct binary placement at the first executable path,
+  executable mode application from four-digit octal strings with a 0755
+  default, and typed apply failures that render without stack traces. Existing
+  installs are preserved for download, checksum, staging, and mode failures;
+  archive extraction and installer scripts still return typed unsupported
+  failures for later executor tasks.
 
 ### User Experience Goals
 
@@ -987,6 +995,21 @@ behavior while preserving the user-visible clean-install result.
   the install root.
 - File extraction should support mapping archive members to final relative
   paths.
+- If an explicitly configured archive member path does not exist, the extractor
+  should scan the safe archive entry index for a binary candidate matching the
+  tool name before failing. Candidate discovery must be deterministic:
+  - consider only regular file entries that passed path-safety checks,
+  - prefer basename equality with the plan tool name or requested executable
+    name,
+  - prefer common executable locations such as `bin/<name>`,
+    `<root>/bin/<name>`, and `<root>/<name>`,
+  - optionally use executable mode bits when the archive format exposes them,
+  - reject ambiguous matches with a root-cause error listing the candidate
+    archive paths,
+  - reject no-match cases with a suggestion to update `archive.extract.files`
+    or inspect the archive with `--verbose`.
+- Fallback archive scanning must be visible in verbose output so the user can
+  see the missing requested path, chosen candidate, or ambiguity.
 
 ### Symlink Behavior
 
@@ -1179,6 +1202,11 @@ Acceptance checks:
 - Failed extraction preserves previous install directory.
 - Malicious archive entries are rejected before touching the final install
   directory.
+- Missing archive member path falls back to scanning for a matching binary name
+  when exactly one safe candidate exists.
+- Missing archive member path fails with suggestions when no candidate exists.
+- Missing archive member path fails with an ambiguity report when multiple safe
+  candidates match.
 - Sudo symlink dry-run and apply command specs are tested.
 
 ### P006 - Convert `config.example.yaml`

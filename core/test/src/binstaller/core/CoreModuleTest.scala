@@ -1,8 +1,14 @@
 package binstaller.core
 
+import binstaller.config.ChecksumAlgorithm
+import binstaller.config.ChecksumSpec
 import binstaller.config.ConfigModule
+import binstaller.config.ExecutableMode
 import binstaller.config.ValidationError
 import utest.*
+
+import java.nio.file.Files
+import java.nio.file.Path
 
 object CoreModuleTest extends TestSuite:
 
@@ -50,6 +56,152 @@ object CoreModuleTest extends TestSuite:
       assert(tool.installer.exists(_.args.head ==
         "/home/test/.apps/$(echo should-not-run)/script.sh"))
 
+    test("direct binary install writes download bytes to first executable path"):
+      val tempRoot   = Files.createTempDirectory("binstaller-core-direct")
+      val installDir = tempRoot.resolve("alpha")
+      val installer  = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.success("alpha-binary".getBytes),
+        InstallFileSystem.nio
+      )
+
+      val result = installer.installTool(directTool(installDir))
+
+      assert(result == Right(ToolInstallSuccess("alpha", installDir.toString)))
+      assert(Files.readString(installDir.resolve("bin/alpha")) == "alpha-binary")
+
+    test("sha256 mismatch fails before replacing an existing install"):
+      val tempRoot     = Files.createTempDirectory("binstaller-core-checksum")
+      val installDir   = tempRoot.resolve("alpha")
+      val existingFile = installDir.resolve("bin/alpha")
+      Files.createDirectories(existingFile.getParent)
+      Files.writeString(existingFile, "existing")
+      val tool = directTool(
+        installDir,
+        checksum = Some(ChecksumSpec(ChecksumAlgorithm.Sha256, "0" * 64))
+      )
+      val installer = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.success("replacement".getBytes),
+        InstallFileSystem.nio
+      )
+
+      val result = installer.installTool(tool)
+
+      assert(result.isLeft)
+      assert(result.left.exists(_.isInstanceOf[ToolInstallError.ChecksumMismatch]))
+      assert(Files.readString(existingFile) == "existing")
+
+    test("executable modes use four-digit octal strings and default to 0755"):
+      val fileSystem = RecordingInstallFileSystem()
+      val installer  = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.success("alpha".getBytes),
+        fileSystem
+      )
+      val tool = directTool(
+        Path.of("/tmp/alpha"),
+        executables = Vector(
+          ResolvedExecutable("bin/alpha", Some(ExecutableMode("0700"))),
+          ResolvedExecutable("bin/helper", None)
+        )
+      )
+
+      val result = installer.installTool(tool)
+
+      assert(result == Right(ToolInstallSuccess("alpha", "/tmp/alpha")))
+      assert(fileSystem.recordedModes.map(request => request.path -> request.mode.octal) ==
+        Vector("bin/alpha" -> "0700", "bin/helper" -> "0755"))
+      assert(fileSystem.recordedModes.map(_.mode.numeric) == Vector(448, 493))
+
+    test("download failure preserves existing install and returns a typed error"):
+      val tempRoot     = Files.createTempDirectory("binstaller-core-download")
+      val installDir   = tempRoot.resolve("alpha")
+      val existingFile = installDir.resolve("bin/alpha")
+      Files.createDirectories(existingFile.getParent)
+      Files.writeString(existingFile, "existing")
+      val installer = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.failure("network unavailable"),
+        InstallFileSystem.nio
+      )
+
+      val result = installer.installTool(directTool(installDir))
+
+      assert(result ==
+        Left(
+          ToolInstallError.DownloadFailed(
+            "alpha",
+            "https://example.invalid/alpha",
+            "network unavailable"
+          )
+        ))
+      assert(Files.readString(existingFile) == "existing")
+
+    test("staging failure preserves existing install and does not replace"):
+      val tempRoot     = Files.createTempDirectory("binstaller-core-staging")
+      val installDir   = tempRoot.resolve("alpha")
+      val existingFile = installDir.resolve("bin/alpha")
+      Files.createDirectories(existingFile.getParent)
+      Files.writeString(existingFile, "existing")
+      val fileSystem = RecordingInstallFileSystem(stageFailure = Some("disk full"))
+      val installer  = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.success("replacement".getBytes),
+        fileSystem
+      )
+
+      val result = installer.installTool(directTool(installDir))
+
+      assert(result == Left(ToolInstallError.StagingFailed("alpha", "disk full")))
+      assert(fileSystem.replaceCalls == 0)
+      assert(Files.readString(existingFile) == "existing")
+
+    test("mode application failure preserves existing install and does not replace"):
+      val tempRoot     = Files.createTempDirectory("binstaller-core-mode")
+      val installDir   = tempRoot.resolve("alpha")
+      val existingFile = installDir.resolve("bin/alpha")
+      Files.createDirectories(existingFile.getParent)
+      Files.writeString(existingFile, "existing")
+      val fileSystem = RecordingInstallFileSystem(modeFailure = Some("permission denied"))
+      val installer  = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.success("replacement".getBytes),
+        fileSystem
+      )
+
+      val result = installer.installTool(directTool(installDir))
+
+      assert(result ==
+        Left(
+          ToolInstallError.ModeApplicationFailed(
+            "alpha",
+            "bin/alpha",
+            "0755",
+            "permission denied"
+          )
+        ))
+      assert(fileSystem.replaceCalls == 0)
+      assert(Files.readString(existingFile) == "existing")
+
+    test("apply renders expected executor failures without throwing"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-cli-error")
+      val config   = tempRoot.resolve("profile.yaml")
+      Files.writeString(config, directBinaryYaml(tempRoot.resolve("alpha")))
+      val service = BinaryInstallerService.resolving(
+        FakeHttpTextClient(""),
+        DirectBinaryInstaller(
+          FakeBinaryDownloadClient.failure("network unavailable"),
+          InstallFileSystem.nio
+        )
+      )
+
+      val result = service.apply(
+        InstallerOptions(
+          configPath = config.toString,
+          statePath = None,
+          resetState = ResetState.Disabled,
+          verboseOutput = VerboseOutput.Disabled
+        )
+      )
+
+      assert(result.exitCode == 1)
+      assert(result.lines.exists(_.contains("download failed")))
+
   private def resolve(
       yaml: String,
       httpTextClient: HttpTextClient = FakeHttpTextClient("")
@@ -79,6 +231,54 @@ object CoreModuleTest extends TestSuite:
   private def errorAt(path: String)(error: ValidationError): Boolean = error.path == path
 
   private def abort(message: String): Nothing = throw java.lang.AssertionError(message)
+
+  private def directTool(
+      installDir: Path,
+      checksum: Option[ChecksumSpec] = None,
+      executables: Vector[ResolvedExecutable] = Vector(ResolvedExecutable("bin/alpha", None))
+  ): ResolvedTool = ResolvedTool(
+    name = "alpha",
+    description = None,
+    version = ResolvedVersion.Concrete("1.0.0"),
+    installDir = installDir.toString,
+    createDirectories = Vector("bin"),
+    download = ResolvedDownload(
+      url = "https://example.invalid/alpha",
+      filename = "alpha",
+      checksum = checksum,
+      archive = None
+    ),
+    installer = None,
+    executables = executables,
+    symlinks = Vector.empty
+  )
+
+  private def directBinaryYaml(installDir: Path): String =
+    s"""
+       |apiVersion: binstaller.io/v1alpha1
+       |kind: BinaryDistributionProfile
+       |metadata:
+       |  name: direct-apply
+       |spec:
+       |  policy:
+       |    appsDir: "${installDir.getParent}"
+       |  vars: {}
+       |  versions:
+       |    alpha: "1.0.0"
+       |  plan:
+       |    - name: alpha
+       |      kind: binary-tool
+       |      spec:
+       |        versionRef: alpha
+       |        installDir: "$installDir"
+       |        createDirectories:
+       |          - bin
+       |        download:
+       |          url: https://example.invalid/alpha
+       |          filename: alpha
+       |        executables:
+       |          - path: bin/alpha
+       |""".stripMargin
 
   private val testResolutionOptions: ResolutionOptions = ResolutionOptions(
     Map("HOME" -> "/home/test")
@@ -251,3 +451,62 @@ private final class FakeHttpTextClient(text: String) extends HttpTextClient:
   def getText(url: String): Either[HttpTextError, String] =
     if url == "https://dl.k8s.io/release/stable.txt" then Right(text)
     else Left(HttpTextError(url, s"unexpected URL $url"))
+
+private final class FakeBinaryDownloadClient(result: Either[BinaryDownloadError, Array[Byte]])
+    extends BinaryDownloadClient:
+
+  def download(url: String): Either[BinaryDownloadError, Array[Byte]] =
+    result.left.map(error => error.copy(url = url))
+
+private object FakeBinaryDownloadClient:
+
+  def success(bytes: Array[Byte]): FakeBinaryDownloadClient = FakeBinaryDownloadClient(Right(bytes))
+
+  def failure(message: String): FakeBinaryDownloadClient =
+    FakeBinaryDownloadClient(Left(BinaryDownloadError("", message)))
+
+private final class RecordingInstallFileSystem(
+    stageFailure: Option[String] = None,
+    modeFailure: Option[String] = None
+) extends InstallFileSystem:
+
+  private var modes: Vector[ExecutableModeRequest] = Vector.empty
+  private var replacements: Int                    = 0
+
+  def recordedModes: Vector[ExecutableModeRequest] = modes
+
+  def replaceCalls: Int = replacements
+
+  def stageDirectBinary(
+      installDir: Path,
+      createDirectories: Vector[String],
+      executablePath: String,
+      bytes: Array[Byte]
+  ): Either[InstallFileSystemError.StagingFailed, StagedInstall] = stageFailure match
+    case Some(message) => Left(InstallFileSystemError.StagingFailed(message))
+    case None          => Right(StagedInstall(Path.of("/tmp/staged-alpha"), installDir))
+
+  def applyExecutableModes(
+      stagedInstall: StagedInstall,
+      executables: Vector[ExecutableModeRequest]
+  ): Either[InstallFileSystemError.ModeApplicationFailed, Unit] =
+    modes = executables
+    modeFailure match
+      case Some(message) =>
+        val first = executables.head
+        Left(
+          InstallFileSystemError.ModeApplicationFailed(
+            first.path,
+            first.mode.octal,
+            message
+          )
+        )
+      case None => Right(())
+
+  def replaceInstall(
+      stagedInstall: StagedInstall
+  ): Either[InstallFileSystemError.ReplacementFailed, Unit] =
+    replacements = replacements + 1
+    Right(())
+
+  def discardStaged(stagedInstall: StagedInstall): Unit = ()
