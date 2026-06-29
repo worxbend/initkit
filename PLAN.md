@@ -66,6 +66,11 @@ kind: BinaryDistributionProfile
   local/sudo symlink commands; `--only` and `--skip` are shared by `plan` and
   `apply --dry-run`; sudo symlink risk is highlighted; and tests cover that
   plan/dry-run paths do not create install or state paths.
+- 2026-06-29: T007 validation checkpoint passed. Config, core, CLI, recursive
+  compile, recursive tests, scalafmt, git whitespace, live
+  `app.run plan --config config.example.yaml`, and isolated temporary-apps
+  no-write smoke checks completed successfully. No source fixes were required
+  before filesystem-changing executor work begins.
 
 ### User Experience Goals
 
@@ -230,6 +235,18 @@ deliberately upgrades them:
 - `com.lihaoyi::fansi:0.5.1` for colored terminal rendering.
 - `com.lihaoyi::utest:0.9.5` for tests.
 
+Candidate additions, to be version-checked before implementation:
+
+- `org.apache.commons:commons-compress` for JVM-native archive extraction,
+  including tar metadata handling and safer archive entry inspection.
+- `org.tukaani:xz` if `commons-compress` needs explicit XZ support for
+  `.tar.xz` on the selected runtime path.
+- `org.jline:jline` for terminal capability detection, width-aware rendering,
+  cursor-safe progress updates, and non-garbled output when stdout is a TTY.
+- A small JVM progress-rendering library may be considered only if JLine plus a
+  local renderer becomes too much maintenance. Prefer a dependency with no
+  background threads, good native-image behavior, and testable output.
+
 Before implementation begins, re-check dependency versions if the goal is to
 use latest stable releases. If versions are upgraded, record the reason in the
 plan or a dedicated change note.
@@ -249,6 +266,58 @@ plan or a dedicated change note.
   command execution, archive extraction, checksum verification, path
   normalization, sudo symlinks, state writes, and redaction.
 - Add focused tests alongside each implementation phase.
+
+### Scala Error And Reporting Quality
+
+The Scala implementation should make expected failures first-class values, not
+stringly exceptions.
+
+Required shape:
+
+- Define small sealed error ADTs per boundary: config loading, validation,
+  variable/version resolution, planning, download, checksum, archive extraction,
+  installer script execution, filesystem replacement, symlink creation, sudo
+  execution, state load/write, and CLI rendering.
+- Each user-facing error should carry:
+  - stable error code or category,
+  - affected profile/tool/action/item,
+  - root cause message,
+  - optional nested causes,
+  - command/download/path/checksum context where safe,
+  - redacted diagnostics,
+  - concrete suggestions when the next action is knowable.
+- Aggregated errors should preserve every root cause rather than only the first
+  failure. CLI output can summarize at the top, but verbose/root-cause sections
+  must allow the user to see all validation and apply failures.
+- Suggestions should be typed data, not ad hoc strings spread through the code.
+  Examples: update checksum from actual hash, remove conflicting package,
+  rerun with `--reset-state`, enable sudo symlinks, check network/TLS, inspect
+  archive path, or use `--verbose`.
+- Keep rendering separate from error construction. Core returns structured
+  errors; CLI decides plain, colored, compact, verbose, or future JSON output.
+- Redaction must happen before rendering and before debug-log/state persistence.
+- Avoid stack traces for expected failures. Stack traces are debug-only for
+  defects and should still be redacted.
+- Public methods that return domain errors should have explicit return types,
+  and tests should assert both machine-readable error fields and user-facing
+  rendering.
+
+Root-cause output expectations:
+
+- Invalid config prints every validation error with YAML-like path, message, and
+  suggestion when available.
+- Apply failures print every failed tool and every failed item when multiple
+  downloads/extractions/scripts fail, with a concise summary and an expanded
+  root-cause section.
+- Command failures include argv, exit status, allowed exit codes, cwd, timeout,
+  selected env names, duration, and bounded stdout/stderr tails.
+- Download failures include URL, redirect target when relevant, HTTP status,
+  size/progress if known, retry count, checksum expectation, and destination.
+- Archive failures include archive type, member path, target path, and whether
+  the rejection was traversal, unsupported entry type, missing selected member,
+  duplicate output, or extraction I/O.
+- State failures include state path, stale fingerprint/profile mismatch, and
+  safe recovery options.
 
 ### Native Image
 
@@ -1089,18 +1158,27 @@ Deliverables:
 
 - Download boundary with fake test implementation.
 - Filesystem boundary for temp/staging/install operations.
-- Archive extraction for `zip`, `tar.gz`, and `tar.xz`.
+- JVM-native archive extraction for `zip`, `tar.gz`, and `tar.xz`; use
+  `commons-compress` plus XZ support if the standard library path is not enough.
+  Shelling out to `tar` should be a temporary fallback only when explicitly
+  documented and covered by tests.
 - Direct binary install.
 - Local symlinks.
 - Sudo symlink command path.
 - Installer script execution path.
+- Structured progress events for downloads, checksum verification, extraction,
+  install replacement, and symlink creation. Core should emit progress data
+  without knowing whether the CLI is rendering a progress bar, verbose logs, or
+  test assertions.
 
 Acceptance checks:
 
 - Fake executor can install direct binary, zip archive, tar.gz archive, tar.xz
-  archive through command boundary, and installer-script tool.
+  archive through JVM extraction, and installer-script tool.
 - Failed checksum prevents install replacement.
 - Failed extraction preserves previous install directory.
+- Malicious archive entries are rejected before touching the final install
+  directory.
 - Sudo symlink dry-run and apply command specs are tested.
 
 ### P006 - Convert `config.example.yaml`
@@ -1146,14 +1224,27 @@ Deliverables:
 
 - User-facing error messages without stack traces for expected failures.
 - Summary table for plan/apply.
-- Verbose mode for detailed download/extraction operations.
+- Styled terminal output with a quiet default and a readable verbose mode.
+- Download progress bars when stdout is a TTY and content length or streamed
+  byte counts are available.
+- Spinner or indeterminate progress when total size is unknown.
+- Width-aware rendering that degrades cleanly when output is redirected or
+  `--no-color` is set.
+- Root-cause section that prints all failures, nested causes, safe diagnostics,
+  and typed suggestions.
+- Verbose mode for detailed download/checksum/extraction/install operations.
 - Exit codes documented in README.
 
 Acceptance checks:
 
 - Missing config path exits nonzero with a concise message.
 - Invalid config prints all validation errors.
-- Failed apply prints tool name, action, and reason.
+- Failed apply prints tool name, action, reason, root cause details, and
+  suggestions.
+- Multiple failures remain visible; the first failure may be highlighted but
+  must not hide the rest.
+- Download progress rendering is tested with a fake progress stream and is
+  disabled automatically for non-TTY output.
 - `versions` prints pinned/resolved/dynamic versions.
 
 ### P009 - Native Release
@@ -1273,19 +1364,21 @@ phases continue.
 | T006 | feature | moderate | Render plans and selection |
 | T007 | validation | simple | Checkpoint resolution and planning |
 | T008 | feature | complex | Execute direct binary installs |
-| T009 | feature | complex | Extract archives safely |
-| T010 | feature | complex | Run installers and symlinks |
-| T011 | validation | simple | Checkpoint executor safety |
-| T012 | improvement | moderate | Lock config example coverage |
-| T013 | feature | complex | Persist state and resume |
-| T014 | improvement | moderate | Polish CLI reporting |
-| T015 | validation | simple | Checkpoint apply workflow |
-| T016 | improvement | moderate | Update docs and release workflow |
-| T017 | review | complex | Security threat model and hardening report |
-| T018 | improvement | complex | Harden command boundaries and installer scripts |
-| T019 | improvement | complex | Harden paths archives symlinks and atomic writes |
-| T020 | improvement | moderate | Harden checksums provenance redaction and state |
-| T021 | validation | moderate | Security regression suite and final validation |
+| T009 | feature | complex | Extract archives safely from Scala |
+| T010 | feature | complex | Emit download and install progress events |
+| T011 | feature | complex | Run installers and symlinks |
+| T012 | improvement | complex | Structured errors root causes and suggestions |
+| T013 | validation | simple | Checkpoint executor safety |
+| T014 | improvement | moderate | Lock config example coverage |
+| T015 | feature | complex | Persist state and resume |
+| T016 | improvement | moderate | Polish fancy CLI reporting and progress |
+| T017 | validation | simple | Checkpoint apply workflow |
+| T018 | improvement | moderate | Update docs and release workflow |
+| T019 | review | complex | Security threat model and hardening report |
+| T020 | improvement | complex | Harden command boundaries and installer scripts |
+| T021 | improvement | complex | Harden paths archives symlinks and atomic writes |
+| T022 | improvement | moderate | Harden checksums provenance redaction and state |
+| T023 | validation | moderate | Security regression suite and final validation |
 
 Current progress:
 
