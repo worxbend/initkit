@@ -323,7 +323,7 @@ Root-cause output expectations:
   size/progress if known, retry count, checksum expectation, and destination.
 - Archive failures include archive type, member path, target path, and whether
   the rejection was traversal, unsupported entry type, missing selected member,
-  duplicate output, or extraction I/O.
+  duplicate output, fallback no-match, fallback ambiguity, or extraction I/O.
 - State failures include state path, stale fingerprint/profile mismatch, and
   safe recovery options.
 
@@ -1420,6 +1420,10 @@ Current progress:
   default for `plan`, and `apply --dry-run` shares the same selector and
   renderer without creating install directories, temp install files, or state
   files.
+- 2026-06-29: T009 is complete. The executor now extracts `zip` and `tar.gz`
+  archives natively, routes `tar.xz` through a structured `tar` command
+  boundary, rejects unsafe archive paths, supports file and directory mappings,
+  and preserves previous installs when extraction fails before replacement.
 
 ## Verification Strategy
 

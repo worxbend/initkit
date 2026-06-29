@@ -4,11 +4,21 @@ import binstaller.config.ChecksumAlgorithm
 import binstaller.config.ChecksumSpec
 import binstaller.config.ConfigModule
 import binstaller.config.ExecutableMode
+import binstaller.config.ArchiveExtract
+import binstaller.config.ArchiveSpec
+import binstaller.config.ArchiveType
+import binstaller.config.ExtractMapping
 import binstaller.config.ValidationError
 import utest.*
 
+import java.io.ByteArrayOutputStream
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.zip.GZIPOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+import scala.util.Using
 
 object CoreModuleTest extends TestSuite:
 
@@ -202,6 +212,103 @@ object CoreModuleTest extends TestSuite:
       assert(result.exitCode == 1)
       assert(result.lines.exists(_.contains("download failed")))
 
+    test("zip archive file mapping lands at configured relative target path"):
+      val tempRoot   = Files.createTempDirectory("binstaller-core-zip")
+      val installDir = tempRoot.resolve("alpha")
+      val installer  = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.success(zipArchive(Vector("pkg/alpha" -> "zip-alpha"))),
+        InstallFileSystem.nio
+      )
+
+      val result = installer.installTool(archiveTool(
+        installDir,
+        ArchiveType.Zip,
+        files = Vector("pkg/alpha" -> "bin/alpha")
+      ))
+
+      assert(result == Right(ToolInstallSuccess("alpha", installDir.toString)))
+      assert(Files.readString(installDir.resolve("bin/alpha")) == "zip-alpha")
+
+    test("tar.gz archive file mapping lands at configured relative target path"):
+      val tempRoot   = Files.createTempDirectory("binstaller-core-targz")
+      val installDir = tempRoot.resolve("alpha")
+      val installer  = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.success(tarGzArchive(Vector("pkg/alpha" -> "tar-alpha"))),
+        InstallFileSystem.nio
+      )
+
+      val result = installer.installTool(archiveTool(
+        installDir,
+        ArchiveType.TarGz,
+        files = Vector("pkg/alpha" -> "bin/alpha")
+      ))
+
+      assert(result == Right(ToolInstallSuccess("alpha", installDir.toString)))
+      assert(Files.readString(installDir.resolve("bin/alpha")) == "tar-alpha")
+
+    test("tar.gz directory mapping moves extracted root directory into install root"):
+      val tempRoot   = Files.createTempDirectory("binstaller-core-targz-dir")
+      val installDir = tempRoot.resolve("alpha")
+      val installer  = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.success(tarGzArchive(Vector(
+          "alpha-root/bin/alpha"    -> "alpha",
+          "alpha-root/share/readme" -> "docs"
+        ))),
+        InstallFileSystem.nio
+      )
+
+      val result = installer.installTool(archiveTool(
+        installDir,
+        ArchiveType.TarGz,
+        directories = Vector("alpha-root" -> ".")
+      ))
+
+      assert(result == Right(ToolInstallSuccess("alpha", installDir.toString)))
+      assert(Files.readString(installDir.resolve("bin/alpha")) == "alpha")
+      assert(Files.readString(installDir.resolve("share/readme")) == "docs")
+
+    test("archive entries that escape staging are rejected and preserve existing install"):
+      val tempRoot     = Files.createTempDirectory("binstaller-core-zip-slip")
+      val installDir   = tempRoot.resolve("alpha")
+      val existingFile = installDir.resolve("bin/alpha")
+      Files.createDirectories(existingFile.getParent)
+      Files.writeString(existingFile, "existing")
+      val installer = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.success(zipArchive(Vector("../evil" -> "bad"))),
+        InstallFileSystem.nio
+      )
+
+      val result = installer.installTool(archiveTool(
+        installDir,
+        ArchiveType.Zip,
+        files = Vector("../evil" -> "bin/alpha")
+      ))
+
+      assert(result.left.exists(_.isInstanceOf[ToolInstallError.ArchiveExtractionFailed]))
+      assert(Files.readString(existingFile) == "existing")
+
+    test("tar.xz extraction runs through a structured command spec"):
+      val tempRoot        = Files.createTempDirectory("binstaller-core-tarxz")
+      val installDir      = tempRoot.resolve("zig")
+      val commandExecutor = FakeArchiveCommandExecutor("zig-root/bin/zig", "zig")
+      val installer       = DirectBinaryInstaller(
+        FakeBinaryDownloadClient.success("tar-xz-bytes".getBytes(StandardCharsets.UTF_8)),
+        InstallFileSystem.nio,
+        commandExecutor
+      )
+
+      val result = installer.installTool(archiveTool(
+        installDir,
+        ArchiveType.TarXz,
+        directories = Vector("zig-root" -> "."),
+        executable = "bin/zig"
+      ))
+
+      assert(result == Right(ToolInstallSuccess("alpha", installDir.toString)))
+      assert(Files.readString(installDir.resolve("bin/zig")) == "zig")
+      assert(commandExecutor.commands.map(_.argv.take(2)) == Vector(Vector("tar", "-xJf")))
+      assert(commandExecutor.commands.exists(_.argv.contains("-C")))
+
   private def resolve(
       yaml: String,
       httpTextClient: HttpTextClient = FakeHttpTextClient("")
@@ -252,6 +359,76 @@ object CoreModuleTest extends TestSuite:
     executables = executables,
     symlinks = Vector.empty
   )
+
+  private def archiveTool(
+      installDir: Path,
+      archiveType: ArchiveType,
+      files: Vector[(String, String)] = Vector.empty,
+      directories: Vector[(String, String)] = Vector.empty,
+      executable: String = "bin/alpha"
+  ): ResolvedTool = ResolvedTool(
+    name = "alpha",
+    description = None,
+    version = ResolvedVersion.Concrete("1.0.0"),
+    installDir = installDir.toString,
+    createDirectories = Vector.empty,
+    download = ResolvedDownload(
+      url = "https://example.invalid/alpha-archive",
+      filename = "alpha-archive",
+      checksum = None,
+      archive = Some(
+        ResolvedArchive(
+          ArchiveSpec(
+            archiveType,
+            ArchiveExtract(
+              files.map((from, to) => ExtractMapping(from, to)),
+              directories.map((from, to) => ExtractMapping(from, to))
+            )
+          ),
+          files.map((from, to) => ResolvedExtractMapping(from, to)),
+          directories.map((from, to) => ResolvedExtractMapping(from, to))
+        )
+      )
+    ),
+    installer = None,
+    executables = Vector(ResolvedExecutable(executable, None)),
+    symlinks = Vector.empty
+  )
+
+  private def zipArchive(entries: Vector[(String, String)]): Array[Byte] =
+    val output = ByteArrayOutputStream()
+    Using.resource(ZipOutputStream(output)): zip =>
+      entries.foreach:
+        case (name, content) =>
+          zip.putNextEntry(ZipEntry(name))
+          zip.write(content.getBytes(StandardCharsets.UTF_8))
+          zip.closeEntry()
+    output.toByteArray
+
+  private def tarGzArchive(entries: Vector[(String, String)]): Array[Byte] =
+    val output = ByteArrayOutputStream()
+    val gzip   = GZIPOutputStream(output)
+    entries.foreach:
+      case (name, content) =>
+        val bytes = content.getBytes(StandardCharsets.UTF_8)
+        gzip.write(tarHeader(name, bytes.length))
+        gzip.write(bytes)
+        val padding = (512 - (bytes.length % 512)) % 512
+        gzip.write(Array.fill[Byte](padding)(0))
+    gzip.write(Array.fill[Byte](1024)(0))
+    gzip.close()
+    output.toByteArray
+
+  private def tarHeader(name: String, size: Int): Array[Byte] =
+    val header = Array.fill[Byte](512)(0)
+    writeTarField(header, 0, 100, name)
+    writeTarField(header, 124, 12, f"$size%011o")
+    header(156) = '0'.toByte
+    header
+
+  private def writeTarField(header: Array[Byte], offset: Int, length: Int, value: String): Unit =
+    val bytes = value.getBytes(StandardCharsets.UTF_8)
+    Array.copy(bytes, 0, header, offset, math.min(bytes.length, length))
 
   private def directBinaryYaml(installDir: Path): String =
     s"""
@@ -465,6 +642,24 @@ private object FakeBinaryDownloadClient:
   def failure(message: String): FakeBinaryDownloadClient =
     FakeBinaryDownloadClient(Left(BinaryDownloadError("", message)))
 
+private final class FakeArchiveCommandExecutor(path: String, content: String)
+    extends CommandExecutor:
+
+  private var recordedCommands: Vector[CommandSpec] = Vector.empty
+
+  def commands: Vector[CommandSpec] = recordedCommands
+
+  def run(spec: CommandSpec): Either[CommandExecutionError, Unit] =
+    recordedCommands = recordedCommands :+ spec
+    val extractDir = spec.argv.dropWhile(_ != "-C").drop(1).headOption.map(Path.of(_))
+    extractDir match
+      case Some(directory) =>
+        val target = directory.resolve(path)
+        Files.createDirectories(target.getParent)
+        Files.writeString(target, content)
+        Right(())
+      case None => Left(CommandExecutionError(spec, "missing -C extraction directory", None))
+
 private final class RecordingInstallFileSystem(
     stageFailure: Option[String] = None,
     modeFailure: Option[String] = None
@@ -482,6 +677,16 @@ private final class RecordingInstallFileSystem(
       createDirectories: Vector[String],
       executablePath: String,
       bytes: Array[Byte]
+  ): Either[InstallFileSystemError.StagingFailed, StagedInstall] = stageFailure match
+    case Some(message) => Left(InstallFileSystemError.StagingFailed(message))
+    case None          => Right(StagedInstall(Path.of("/tmp/staged-alpha"), installDir))
+
+  def stageArchive(
+      installDir: Path,
+      createDirectories: Vector[String],
+      archive: ResolvedArchive,
+      bytes: Array[Byte],
+      commandExecutor: CommandExecutor
   ): Either[InstallFileSystemError.StagingFailed, StagedInstall] = stageFailure match
     case Some(message) => Left(InstallFileSystemError.StagingFailed(message))
     case None          => Right(StagedInstall(Path.of("/tmp/staged-alpha"), installDir))
