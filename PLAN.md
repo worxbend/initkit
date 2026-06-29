@@ -87,6 +87,14 @@ as part of this refactor.
   focused checks `core.test`, `tui.test`, `app.run tui --config
   config.example.yaml`, recursive compile, scalafmt check, JSON validation,
   and `git diff --check` passed.
+- 2026-06-30: T008 wired the internal `r` action for confirmed real apply.
+  Pressing `r` now opens an in-TUI confirmation modal before any non-dry-run
+  apply call is made; only `Enter` in that modal calls `applyWithEvents`.
+  Escape or `n` closes the modal without writes. Confirmed apply converts only
+  selected TUI entries to core `ToolSelection`, sets `DryRunMode.Disabled` and
+  `ApplyConfirmation.Enabled`, and preserves the existing option fields for
+  state, reset-state, lock validation, and other core gates. Focused core,
+  CLI, TUI, compile, scalafmt, JSON, and whitespace checks passed.
 
 ## Product Target
 
@@ -534,7 +542,7 @@ The authoritative resumable implementation queue is stored in
 | T005 | validation | simple | Checkpoint command browsing |
 | T006 | feature | moderate | Wire selected plan action |
 | T007 | feature | complex | Wire selected dry run (completed 2026-06-30) |
-| T008 | feature | complex | Wire confirmed apply |
+| T008 | feature | complex | Wire confirmed apply (completed 2026-06-30) |
 | T009 | validation | simple | Checkpoint TUI actions |
 | T010 | feature | complex | Implement error modals |
 | T011 | improvement | complex | Polish TUI layout |

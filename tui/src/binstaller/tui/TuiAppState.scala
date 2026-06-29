@@ -1,6 +1,7 @@
 package binstaller.tui
 
 import binstaller.core.InstallerResult
+import binstaller.core.ApplyConfirmation
 import binstaller.core.BinaryInstallerService
 import binstaller.core.DryRunMode
 import binstaller.core.InstallerEvent
@@ -21,6 +22,7 @@ enum TuiBrowsingMode(val label: String):
 enum TuiModal:
   case Help
   case Message(title: String, lines: Vector[String])
+  case ConfirmApply(selectedToolNames: Vector[String])
 
 /** One TUI-local plan entry, preserving the resolved core tool without using CLI selection. */
 final case class TuiPlanEntry(index: Int, tool: ResolvedTool):
@@ -88,6 +90,12 @@ trait TuiAppActions:
   /** Run apply in dry-run mode for the current TUI selection and return the next app state. */
   def dryRunApply(state: TuiAppState): TuiAppState
 
+  /** Open the real-apply confirmation prompt for the current TUI selection. */
+  def requestApplyConfirmation(state: TuiAppState): TuiAppState
+
+  /** Run confirmed real apply for the current TUI selection and return the next app state. */
+  def confirmedApply(state: TuiAppState): TuiAppState
+
 /** Constructors for TUI action boundaries. */
 object TuiAppActions:
 
@@ -96,6 +104,10 @@ object TuiAppActions:
     def planPreview(state: TuiAppState): TuiAppState = state
 
     def dryRunApply(state: TuiAppState): TuiAppState = state
+
+    def requestApplyConfirmation(state: TuiAppState): TuiAppState = state
+
+    def confirmedApply(state: TuiAppState): TuiAppState = state
 
   /** Build action handlers that call core services only after converting TUI-local selection. */
   def fromService(options: InstallerOptions, service: BinaryInstallerService): TuiAppActions =
@@ -147,6 +159,50 @@ object TuiAppActions:
             else Some(TuiModal.Message("Dry run failed", result.lines.take(8)))
           state.copy(
             mode = TuiBrowsingMode.DryRun,
+            logs = nextLogs,
+            logScroll = 0,
+            executionState = Some(executionState.copy(logs =
+              (executionState.logs :+ selectedText)
+                .takeRight(80)
+            )),
+            modal = nextModal
+          )
+
+      def requestApplyConfirmation(state: TuiAppState): TuiAppState =
+        val selectedEntries = state.entries.filter(entry => state.selection.contains(entry.name))
+        if selectedEntries.isEmpty then state.withNoSelectionModal("real apply")
+        else
+          state.copy(modal = Some(TuiModal.ConfirmApply(selectedEntries.map(_.name))))
+
+      def confirmedApply(state: TuiAppState): TuiAppState =
+        val selectedEntries = state.entries.filter(entry => state.selection.contains(entry.name))
+        if selectedEntries.isEmpty then state.withNoSelectionModal("real apply")
+        else
+          val selection    = TuiCoreSelection.toToolSelection(state.selection, state.entries)
+          val applyOptions = options.copy(
+            selection = selection,
+            dryRun = DryRunMode.Disabled,
+            applyConfirmation = ApplyConfirmation.Enabled
+          )
+          val request  = TuiRequest(TuiMode.Apply, applyOptions, Some("tui apply"))
+          val settings = ExecutionTuiSettings(
+            viewport = state.viewport,
+            appVersion = state.header.appVersion,
+            hostSummary = state.header.hostSummary,
+            spinnerFrame = 0,
+            logs = state.logs
+          )
+          val observer       = CollectingTuiAppExecutionObserver(request, settings)
+          val result         = service.applyWithEvents(applyOptions, observer)
+          val executionState = observer.state.withResult(result)
+          val selectedText   = s"apply selected ${selectedEntries.size} / ${state.totalCount}: " +
+            selectedEntries.map(_.name).mkString(", ")
+          val nextLogs  = (state.logs :+ selectedText).takeRight(120)
+          val nextModal =
+            if result.exitCode == 0 then None
+            else Some(TuiModal.Message("Apply failed", result.lines.take(8)))
+          state.copy(
+            mode = TuiBrowsingMode.Apply,
             logs = nextLogs,
             logScroll = 0,
             executionState = Some(executionState.copy(logs =
@@ -314,6 +370,7 @@ object TuiAppController:
   def handle(state: TuiAppState, input: TuiInput, actions: TuiAppActions): TuiAppState =
     if state.exitRequested then state
     else if state.filter.editing then handleFilterInput(state, input)
+    else if state.modal.nonEmpty then handleModalInput(state, input, actions)
     else if state.executionState.nonEmpty then handleExecutionInput(state, input)
     else handleBrowsingInput(state, input, actions)
 
@@ -357,6 +414,7 @@ object TuiAppController:
     case TuiInput.Character('i') => invertVisible(state)
     case TuiInput.Character('p') => actions.planPreview(state)
     case TuiInput.Character('d') => actions.dryRunApply(state)
+    case TuiInput.Character('r') => actions.requestApplyConfirmation(state)
     case TuiInput.Slash          =>
       state.copy(filter = state.filter.copy(draft = Some(state.filter.value.getOrElse(""))))
     case TuiInput.Question              => toggleHelp(state)
@@ -366,6 +424,25 @@ object TuiAppController:
     case TuiInput.MouseWheelUp          => scrollFocused(state, -1)
     case TuiInput.MouseWheelDown        => scrollFocused(state, 1)
     case TuiInput.Character(_) | TuiInput.Backspace | TuiInput.Unknown => state
+
+  private def handleModalInput(
+      state: TuiAppState,
+      input: TuiInput,
+      actions: TuiAppActions
+  ): TuiAppState = state.modal match
+    case Some(TuiModal.ConfirmApply(_)) => input match
+        case TuiInput.Enter  => actions.confirmedApply(state.copy(modal = None))
+        case TuiInput.Escape => state.copy(modal = None)
+        case TuiInput.Character('n') | TuiInput.Character('N') => state.copy(modal = None)
+        case TuiInput.Quit | TuiInput.CtrlC                    => state.copy(exitRequested = true)
+        case TuiInput.Resize(value) => clampScrolls(state.copy(viewport = value))
+        case _                      => state
+    case Some(_) => input match
+        case TuiInput.Enter | TuiInput.Escape => state.copy(modal = None)
+        case TuiInput.Quit | TuiInput.CtrlC   => state.copy(exitRequested = true)
+        case TuiInput.Resize(value)           => clampScrolls(state.copy(viewport = value))
+        case _                                => state
+    case None => handleBrowsingInput(state, input, actions)
 
   private def handleExecutionInput(state: TuiAppState, input: TuiInput): TuiAppState = input match
     case TuiInput.Resize(value) => state.copy(

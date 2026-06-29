@@ -1,6 +1,7 @@
 package binstaller.tui
 
 import binstaller.config.ChecksumAlgorithm
+import binstaller.core.ApplyConfirmation
 import binstaller.core.BinaryInstallerService
 import binstaller.core.DownloadProgressStatus
 import binstaller.core.DryRunMode
@@ -13,6 +14,7 @@ import binstaller.core.InstallerRunStatus
 import binstaller.core.InstallerOptions
 import binstaller.core.InstallerResult
 import binstaller.core.LockOptions
+import binstaller.core.LockedApplyMode
 import binstaller.core.ResetState
 import binstaller.core.ResolutionOptions
 import binstaller.core.ResolvedPlanSnapshot
@@ -428,6 +430,83 @@ object TuiModuleTest extends TestSuite:
         Vector(ToolSelection(only = Vector("beta"), skip = Vector.empty) -> DryRunMode.Enabled))
       assert(finalState.appState.mode == TuiBrowsingMode.DryRun)
       assert(finalState.appState.executionState.exists(_.dryRunLines.contains("dry-run ok")))
+
+    test("r opens a confirmation modal before real apply starts"):
+      val fixture  = writeFixture()
+      val service  = RecordingDryRunService(InstallerResult(Vector("apply ok"), 0))
+      val actions  = TuiAppActions.fromService(fixture.options, service)
+      val selected = PlanningTuiSession.run(
+        sessionState(fixture),
+        Vector(TuiInput.Character('c'), TuiInput.Down, TuiInput.Character(' '))
+      )
+      val prompted = PlanningTuiSession.run(selected, Vector(TuiInput.Character('r')), actions)
+      val plain    = stripAnsi(PlanningTuiRenderer.render(prompted.toModel).mkString("\n"))
+
+      assert(service.applyOptions.isEmpty)
+      assert(prompted.appState.executionState.isEmpty)
+      assert(prompted.appState.modal.contains(TuiModal.ConfirmApply(Vector("beta"))))
+      assert(plain.contains("Confirm real apply"))
+      assert(plain.contains("Apply will install 1 selected entry: beta"))
+
+    test("closing or cancelling real-apply confirmation performs no writes"):
+      val fixture = writeFixture()
+      val service = RecordingDryRunService(InstallerResult(Vector("apply ok"), 0))
+      val actions = TuiAppActions.fromService(fixture.options, service)
+      val prompt  = PlanningTuiSession.run(
+        sessionState(fixture),
+        Vector(TuiInput.Character('r')),
+        actions
+      )
+      val closed = PlanningTuiSession.run(prompt, Vector(TuiInput.Escape, TuiInput.Enter), actions)
+      val cancelPrompt = PlanningTuiSession.run(
+        sessionState(fixture),
+        Vector(TuiInput.Character('r')),
+        actions
+      )
+      val cancelled = PlanningTuiSession.run(cancelPrompt, Vector(TuiInput.Character('n')), actions)
+
+      assert(service.planOptions.isEmpty)
+      assert(service.applyOptions.isEmpty)
+      assert(closed.appState.executionState.isEmpty)
+      assert(cancelled.appState.executionState.isEmpty)
+      assert(closed.appState.modal.isEmpty)
+      assert(cancelled.appState.modal.isEmpty)
+      assert(!Files.exists(fixture.appsDir))
+      assert(!Files.exists(fixture.stateFile))
+
+    test("confirming r runs real apply only for selected entries through existing gates"):
+      val fixture = writeFixture()
+      val options = fixture.options.copy(
+        statePath = Some(fixture.stateFile.toString),
+        resetState = ResetState.Enabled,
+        lockPath = "custom.lock.json",
+        lockedApply = LockedApplyMode.Enabled
+      )
+      val service  = RecordingDryRunService(InstallerResult(Vector("apply ok"), 0))
+      val actions  = TuiAppActions.fromService(options, service)
+      val selected = PlanningTuiSession.run(
+        sessionState(fixture.copy(options = options)),
+        Vector(TuiInput.Character('c'), TuiInput.Down, TuiInput.Character(' '))
+      )
+      val finalState =
+        PlanningTuiSession.run(selected, Vector(TuiInput.Character('r'), TuiInput.Enter), actions)
+      val rendered = stripAnsi(TuiAppRenderer.render(finalState.appState).mkString("\n"))
+
+      assert(service.planOptions.isEmpty)
+      assert(service.applyOptions.size == 1)
+      val observed = service.applyOptions.head
+      assert(observed.selection == ToolSelection(only = Vector("beta"), skip = Vector.empty))
+      assert(observed.dryRun == DryRunMode.Disabled)
+      assert(observed.applyConfirmation == ApplyConfirmation.Enabled)
+      assert(observed.statePath == Some(fixture.stateFile.toString))
+      assert(observed.resetState == ResetState.Enabled)
+      assert(observed.lockPath == "custom.lock.json")
+      assert(observed.lockedApply == LockedApplyMode.Enabled)
+      assert(finalState.appState.mode == TuiBrowsingMode.Apply)
+      assert(finalState.appState.modal.isEmpty)
+      assert(finalState.appState.executionState.exists(_.summary.nonEmpty))
+      assert(rendered.contains("mode apply execution"))
+      assert(rendered.contains("apply selected 1 / 2: beta"))
 
     test("interactive d action replaces the planning frame with execution output"):
       val fixture  = writeFixture()

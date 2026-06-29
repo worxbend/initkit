@@ -306,7 +306,7 @@ object PlanningTuiModel:
       modal = state.modal,
       footer = footerText(state.snapshot, visibleEntries.map(_.tool)),
       keybar =
-        "p plan | d dry-run | tab focus | enter details | l logs | space toggle | a/c/i select | / filter | ? help | q quit"
+        "p plan | d dry-run | r apply | tab focus | enter details | l logs | space | a/c/i | / filter | ? help | q quit"
     )
 
   /** Filter TUI plan entries by name or description using a case-insensitive contains match. */
@@ -1411,8 +1411,20 @@ object PlanningTuiRenderer:
     Vector(separator(width))
 
   private def modal(value: Option[TuiModal], width: Int): Vector[String] = value match
-    case None                                 => Vector.empty
-    case Some(TuiModal.Help)                  => help(width)
+    case None                               => Vector.empty
+    case Some(TuiModal.Help)                => help(width)
+    case Some(TuiModal.ConfirmApply(names)) => Vector(
+        separator(width),
+        PlanningTuiStatus.style(PlanningTuiStatus.Warning, fit("Confirm real apply", width)),
+        fit(
+          s"Apply will install ${names.size} selected entr${
+              if names.size == 1 then "y" else "ies"
+            }: ${names.mkString(", ")}",
+          width
+        ),
+        fit("Press Enter to apply now, or Escape/n to cancel.", width),
+        separator(width)
+      )
     case Some(TuiModal.Message(title, lines)) => Vector(
         separator(width),
         PlanningTuiStatus.style(PlanningTuiStatus.Active, fit(title, width))
@@ -1431,6 +1443,7 @@ object PlanningTuiRenderer:
     fit("Enter focuses selected entry details; l focuses logs.", width),
     fit("p previews the selected entries without installing or writing state.", width),
     fit("d runs dry-run apply for selected entries and keeps the final summary visible.", width),
+    fit("r opens a confirmation prompt before applying selected entries.", width),
     fit("Details/log focus: arrows, PageUp/PageDown, Home/End, and mouse wheel scroll.", width),
     fit("/ edits the filter, Enter applies it, Escape cancels editing or closes modals.", width),
     fit("q or Ctrl+C exits after restoring the terminal.", width),
