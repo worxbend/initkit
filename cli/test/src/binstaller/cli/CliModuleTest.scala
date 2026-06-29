@@ -9,6 +9,7 @@ import binstaller.core.DirectBinaryInstaller
 import binstaller.core.HttpTextClient
 import binstaller.core.HttpTextError
 import binstaller.core.InstallFileSystem
+import binstaller.core.InstallerEventObserver
 import binstaller.core.InstallerOptions
 import binstaller.core.InstallerResult
 import binstaller.core.ResetState
@@ -379,11 +380,17 @@ private final class RecordingInstallerService extends BinaryInstallerService:
 
   def applyOptions: Option[InstallerOptions] = recordedApplyOptions
 
-  def plan(options: InstallerOptions): InstallerResult =
+  def planWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult =
     recordedPlanOptions = Some(options)
     InstallerResult(Vector("plan"), 0)
 
-  def apply(options: InstallerOptions): InstallerResult =
+  def applyWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult =
     recordedApplyOptions = Some(options)
     InstallerResult(Vector("apply"), 0)
 

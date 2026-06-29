@@ -681,6 +681,189 @@ object CoreModuleTest extends TestSuite:
           Vector("alpha" -> "completed", "beta" -> "completed")
         ))
 
+    test("dry-run apply emits resolving plan-ready and summary events in order"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-events-dry-run")
+      val config   = writeConfig(tempRoot, twoToolYaml(tempRoot, "dry-run.state.json"))
+      val observer = RecordingInstallerEventObserver()
+      val service  = statefulService(tempRoot, RoutingBinaryDownloadClient.success)
+
+      val result = service.applyWithEvents(
+        applyOptions(config).copy(dryRun = DryRunMode.Enabled),
+        observer
+      )
+
+      assert(result.exitCode == 0)
+      assert(eventIndex(observer.events, { case InstallerEvent.ResolvingStarted(_, _) => true }) <
+        eventIndex(observer.events, { case InstallerEvent.PlanReady(2, Some(_), _) => true }))
+      assert(eventIndex(observer.events, { case InstallerEvent.PlanReady(2, Some(_), _) => true }) <
+        eventIndex(
+          observer.events,
+          {
+            case InstallerEvent.Summary(InstallerRunStatus.Succeeded, 0, 0, 0, 0, Some(_), _) =>
+              true
+          }
+        ))
+
+    test("successful apply emits tool start progress result and summary in order"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-events-success")
+      val config   = writeConfig(tempRoot, directBinaryYaml(tempRoot.resolve("alpha")))
+      val observer = RecordingInstallerEventObserver()
+      val service  = BinaryInstallerService.resolving(
+        FakeHttpTextClient(""),
+        DirectBinaryInstaller(
+          ProgressingBinaryDownloadClient("alpha-binary".getBytes(StandardCharsets.UTF_8)),
+          InstallFileSystem.nio
+        ),
+        ApplyStateStore.nio(tempRoot)
+      )
+
+      val result = service.applyWithEvents(applyOptions(config), observer)
+
+      assert(result.exitCode == 0)
+      assert(eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.ToolStarted("alpha", InstallerPhase.Downloading, _) => true
+        }
+      ) < eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.DownloadProgress(
+                "alpha",
+                "https://example.invalid/alpha",
+                _,
+                Some(_),
+                DownloadProgressStatus.Advanced,
+                _
+              ) => true
+        }
+      ))
+      assert(eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.DownloadProgress(_, _, _, _, DownloadProgressStatus.Finished, _) =>
+            true
+        }
+      ) < eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.ToolResult("alpha", ToolResultStatus.Completed, Some(_), None, _) =>
+            true
+        }
+      ))
+      assert(eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.ToolResult("alpha", ToolResultStatus.Completed, Some(_), None, _) =>
+            true
+        }
+      ) < eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.Summary(InstallerRunStatus.Succeeded, 1, 0, 0, 0, None, _) => true
+        }
+      ))
+
+    test("failed apply emits failed result with root-cause summary"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-events-failed")
+      val config   = writeConfig(tempRoot, directBinaryYaml(tempRoot.resolve("alpha")))
+      val observer = RecordingInstallerEventObserver()
+      val service  = statefulService(tempRoot, FakeBinaryDownloadClient.failure("network down"))
+
+      val result = service.applyWithEvents(applyOptions(config), observer)
+
+      assert(result.exitCode == 1)
+      assert(observer.events.exists:
+        case InstallerEvent.ToolResult(
+              "alpha",
+              ToolResultStatus.Failed,
+              None,
+              Some(summary),
+              _
+            ) => summary.contains("download:") && summary.contains("network down")
+        case _ => false)
+      assert(observer.events.exists:
+        case InstallerEvent.Summary(InstallerRunStatus.Failed, 0, 1, 0, 1, None, _) => true
+        case _                                                                      => false)
+
+    test("completed state entries emit skipped events with state file path"):
+      val tempRoot     = Files.createTempDirectory("binstaller-core-events-skipped")
+      val config       = writeConfig(tempRoot, twoToolYaml(tempRoot, "resume.state.json"))
+      val firstService = statefulService(
+        tempRoot,
+        RoutingBinaryDownloadClient(Map(
+          "https://example.invalid/alpha" -> Right("alpha".getBytes(StandardCharsets.UTF_8)),
+          "https://example.invalid/beta"  -> Left("network unavailable")
+        ))
+      )
+      val _             = firstService.apply(applyOptions(config))
+      val observer      = RecordingInstallerEventObserver()
+      val secondService = statefulService(tempRoot, RoutingBinaryDownloadClient.success)
+
+      val result = secondService.applyWithEvents(
+        applyOptions(config).copy(selection = ToolSelection(Vector.empty, Vector("beta"))),
+        observer
+      )
+
+      assert(result.exitCode == 0)
+      val skipIndex = eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.ToolSkipped("alpha", "already completed in state", Some(path), _) =>
+            path.endsWith("resume.state.json")
+        }
+      )
+      val summaryIndex = eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.Summary(InstallerRunStatus.Succeeded, 0, 0, 1, 0, Some(_), _) => true
+        }
+      )
+      assert(skipIndex < summaryIndex)
+
+    test("continue-on-error emits failed then completed results before failed summary"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-events-continue")
+      val config   = writeConfig(
+        tempRoot,
+        twoToolYaml(tempRoot, "continue.state.json", continueOnError = true)
+      )
+      val observer = RecordingInstallerEventObserver()
+      val service  = statefulService(
+        tempRoot,
+        RoutingBinaryDownloadClient(Map(
+          "https://example.invalid/alpha" -> Left("network unavailable"),
+          "https://example.invalid/beta"  -> Right("beta".getBytes(StandardCharsets.UTF_8))
+        ))
+      )
+
+      val result = service.applyWithEvents(applyOptions(config), observer)
+
+      assert(result.exitCode == 1)
+      assert(eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.ToolResult("alpha", ToolResultStatus.Failed, None, Some(_), _) => true
+        }
+      ) < eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.ToolResult("beta", ToolResultStatus.Completed, Some(_), None, _) =>
+            true
+        }
+      ))
+      assert(eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.ToolResult("beta", ToolResultStatus.Completed, Some(_), None, _) =>
+            true
+        }
+      ) < eventIndex(
+        observer.events,
+        {
+          case InstallerEvent.Summary(InstallerRunStatus.Failed, 1, 1, 0, 1, Some(_), _) => true
+        }
+      ))
+
   private def resolve(
       yaml: String,
       httpTextClient: HttpTextClient = FakeHttpTextClient("")
@@ -718,6 +901,14 @@ object CoreModuleTest extends TestSuite:
     case other        => abort(s"expected one tool, got ${other.size}")
 
   private def errorAt(path: String)(error: ValidationError): Boolean = error.path == path
+
+  private def eventIndex(
+      events: Vector[InstallerEvent],
+      matches: PartialFunction[InstallerEvent, Boolean]
+  ): Int =
+    val index = events.indexWhere(event => matches.applyOrElse(event, (_: InstallerEvent) => false))
+    if index >= 0 then index
+    else abort(s"event not found in ${events.mkString(", ")}")
 
   private def abort(message: String): Nothing = throw java.lang.AssertionError(message)
 
@@ -1252,6 +1443,22 @@ private object FakeBinaryDownloadClient:
   def failure(message: String): FakeBinaryDownloadClient =
     FakeBinaryDownloadClient(Left(BinaryDownloadError("", message)))
 
+private final class ProgressingBinaryDownloadClient(bytes: Array[Byte])
+    extends BinaryDownloadClient:
+
+  def download(url: String): Either[BinaryDownloadError, Array[Byte]] = Right(bytes)
+
+  override def download(
+      url: String,
+      progressObserver: BinaryDownloadProgressObserver
+  ): Either[BinaryDownloadError, Array[Byte]] =
+    val halfway = bytes.length.toLong / 2L
+    val total   = Some(bytes.length.toLong)
+    progressObserver.onProgress(BinaryDownloadProgress.Started(url, total))
+    progressObserver.onProgress(BinaryDownloadProgress.Advanced(url, halfway, total))
+    progressObserver.onProgress(BinaryDownloadProgress.Finished(url, bytes.length.toLong, total))
+    Right(bytes)
+
 private final class RoutingBinaryDownloadClient(
     results: Map[String, Either[String, Array[Byte]]]
 ) extends BinaryDownloadClient:
@@ -1267,6 +1474,14 @@ private object RoutingBinaryDownloadClient:
     "https://example.invalid/alpha" -> Right("alpha".getBytes(StandardCharsets.UTF_8)),
     "https://example.invalid/beta"  -> Right("beta".getBytes(StandardCharsets.UTF_8))
   ))
+
+private final class RecordingInstallerEventObserver extends InstallerEventObserver:
+
+  private var recordedEvents: Vector[InstallerEvent] = Vector.empty
+
+  def events: Vector[InstallerEvent] = recordedEvents
+
+  def onEvent(event: InstallerEvent): Unit = recordedEvents = recordedEvents :+ event
 
 private final class RecordingApplyStateStore(delegate: ApplyStateStore) extends ApplyStateStore:
 

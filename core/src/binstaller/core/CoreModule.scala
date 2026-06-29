@@ -92,14 +92,30 @@ object ApplyConfirmation:
   def fromFlag(value: Boolean): ApplyConfirmation = if value then Enabled else Disabled
 
 trait BinaryInstallerService:
-  def plan(options: InstallerOptions): InstallerResult
-  def apply(options: InstallerOptions): InstallerResult
+
+  def plan(options: InstallerOptions): InstallerResult =
+    planWithEvents(options, InstallerEventObserver.none)
+
+  def planWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult
+
+  def apply(options: InstallerOptions): InstallerResult =
+    applyWithEvents(options, InstallerEventObserver.none)
 
   def applyWithProgress(
       options: InstallerOptions,
       progressObserver: BinaryDownloadProgressObserver
-  ): InstallerResult = progressObserver match
-    case _ => apply(options)
+  ): InstallerResult = applyWithEvents(
+    options,
+    InstallerEventObserver.fromDownloadProgress(progressObserver)
+  )
+
+  def applyWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult
 
   def versions(options: InstallerOptions): InstallerResult
 
@@ -167,6 +183,92 @@ trait BinaryDownloadClient:
 
 object BinaryDownloadClient:
   def jdk: BinaryDownloadClient = JdkBinaryDownloadClient(RuntimeHttpClient.create())
+
+enum InstallerPhase:
+  case Resolving
+  case Planning
+  case LoadingState
+  case Downloading
+  case VerifyingChecksum
+  case Staging
+  case ApplyingModes
+  case ReplacingInstall
+  case VerifyingExecutables
+  case CreatingSymlinks
+  case SavingState
+
+enum ToolResultStatus:
+  case Completed, Failed
+
+enum InstallerRunStatus:
+  case Succeeded, Failed
+
+enum DownloadProgressStatus:
+  case Started, Advanced, Finished
+
+enum InstallerEvent:
+  case ResolvingStarted(configPath: String, elapsedTime: Duration)
+  case PlanReady(toolCount: Int, stateFilePath: Option[String], elapsedTime: Duration)
+  case ToolStarted(toolName: String, phase: InstallerPhase, elapsedTime: Duration)
+  case ToolPhaseChanged(toolName: String, phase: InstallerPhase, elapsedTime: Duration)
+
+  case DownloadProgress(
+      toolName: String,
+      url: String,
+      downloadedBytes: Long,
+      totalBytes: Option[Long],
+      status: DownloadProgressStatus,
+      elapsedTime: Duration
+  )
+
+  case LogLine(toolName: Option[String], line: String, elapsedTime: Duration)
+
+  case ToolResult(
+      toolName: String,
+      status: ToolResultStatus,
+      installDir: Option[String],
+      failureSummary: Option[String],
+      elapsedTime: Duration
+  )
+
+  case ToolSkipped(
+      toolName: String,
+      reason: String,
+      stateFilePath: Option[String],
+      elapsedTime: Duration
+  )
+
+  case Summary(
+      status: InstallerRunStatus,
+      installed: Int,
+      failed: Int,
+      skipped: Int,
+      exitCode: Int,
+      stateFilePath: Option[String],
+      elapsedTime: Duration
+  )
+
+trait InstallerEventObserver:
+  def onEvent(event: InstallerEvent): Unit
+
+object InstallerEventObserver:
+  val none: InstallerEventObserver = _ => ()
+
+  def fromDownloadProgress(
+      progressObserver: BinaryDownloadProgressObserver
+  ): InstallerEventObserver = event =>
+    event match
+      case InstallerEvent.DownloadProgress(_, url, downloadedBytes, totalBytes, status, _) =>
+        status match
+          case DownloadProgressStatus.Started =>
+            progressObserver.onProgress(BinaryDownloadProgress.Started(url, totalBytes))
+          case DownloadProgressStatus.Advanced => progressObserver.onProgress(
+              BinaryDownloadProgress.Advanced(url, downloadedBytes, totalBytes)
+            )
+          case DownloadProgressStatus.Finished => progressObserver.onProgress(
+              BinaryDownloadProgress.Finished(url, downloadedBytes, totalBytes)
+            )
+      case _ => ()
 
 private object RuntimeHttpClient:
   val requestTimeout: Duration = Duration.ofSeconds(30)
@@ -387,6 +489,19 @@ private final case class ObservedInstallResults(
     persistenceError: Option[String]
 )
 
+private[core] final case class InstallerEventContext(
+    observer: InstallerEventObserver,
+    startedAtNanos: Long
+):
+  def elapsedTime: Duration = Duration.ofNanos(System.nanoTime() - startedAtNanos)
+
+  def emit(event: Duration => InstallerEvent): Unit = observer.onEvent(event(elapsedTime))
+
+private[core] object InstallerEventContext:
+
+  def start(observer: InstallerEventObserver): InstallerEventContext =
+    InstallerEventContext(observer, System.nanoTime())
+
 enum ApplyPreflightError:
   case ConfirmationRequired
   case SudoSymlinkNotAllowed(toolName: String)
@@ -500,15 +615,15 @@ final class DirectBinaryInstaller(
     applyConfirmation,
     verboseOutput,
     _ => Right(()),
-    progressObserver
+    InstallerEventContext.start(InstallerEventObserver.fromDownloadProgress(progressObserver))
   )
 
-  def installPlanWithObserver(
+  private[core] def installPlanWithObserver(
       plan: ResolvedPlan,
       applyConfirmation: ApplyConfirmation,
       verboseOutput: VerboseOutput,
       terminalObserver: TerminalToolResult => Either[String, Unit],
-      progressObserver: BinaryDownloadProgressObserver = BinaryDownloadProgressObserver.none
+      eventContext: InstallerEventContext
   ): InstallerResult = preflight(plan, applyConfirmation) match
     case Some(error) => InstallerResult(Vector(renderPreflightError(error)), 1)
     case None        =>
@@ -517,7 +632,7 @@ final class DirectBinaryInstaller(
         plan.tools,
         verboseOutput,
         terminalObserver,
-        progressObserver
+        eventContext
       )
       val lines = observed.lines ++
         observed.persistenceError.map(message => s"state write failed: $message").toVector
@@ -557,22 +672,28 @@ final class DirectBinaryInstaller(
       tools: Vector[ResolvedTool],
       verboseOutput: VerboseOutput,
       terminalObserver: TerminalToolResult => Either[String, Unit],
-      progressObserver: BinaryDownloadProgressObserver
+      eventContext: InstallerEventContext
   ): ObservedInstallResults = tools.headOption match
     case None       => ObservedInstallResults(Vector.empty, Vector.empty, None)
     case Some(tool) =>
-      val result   = installTool(policy, tool, progressObserver)
+      val verbose = verboseLines(tool, verboseOutput)
+      verbose.foreach(line =>
+        eventContext.emit(InstallerEvent.LogLine(Some(tool.name), line, _))
+      )
+      eventContext.emit(InstallerEvent.ToolStarted(tool.name, InstallerPhase.Downloading, _))
+      val result   = installTool(policy, tool, eventContext)
       val terminal = terminalResult(result)
+      eventContext.emit(toolResultEvent(terminal))
       terminalObserver(terminal) match
         case Left(message) => ObservedInstallResults(
-            verboseLines(tool, verboseOutput) :+ TerminalToolResult.line(terminal),
+            verbose :+ TerminalToolResult.line(terminal),
             Vector(terminal),
             Some(message)
           )
         case Right(()) => result match
             case Left(_) if policy.continueOnError == ContinueOnError.Disabled =>
               ObservedInstallResults(
-                verboseLines(tool, verboseOutput) :+ TerminalToolResult.line(terminal),
+                verbose :+ TerminalToolResult.line(terminal),
                 Vector(terminal),
                 None
               )
@@ -582,10 +703,10 @@ final class DirectBinaryInstaller(
                 tools.tail,
                 verboseOutput,
                 terminalObserver,
-                progressObserver
+                eventContext
               )
               rest.copy(
-                lines = verboseLines(tool, verboseOutput) ++
+                lines = verbose ++
                   (TerminalToolResult.line(terminal) +: rest.lines),
                 results = terminal +: rest.results
               )
@@ -595,10 +716,10 @@ final class DirectBinaryInstaller(
                 tools.tail,
                 verboseOutput,
                 terminalObserver,
-                progressObserver
+                eventContext
               )
               rest.copy(
-                lines = verboseLines(tool, verboseOutput) ++
+                lines = verbose ++
                   (TerminalToolResult.line(terminal) +: rest.lines),
                 results = terminal +: rest.results
               )
@@ -613,20 +734,41 @@ final class DirectBinaryInstaller(
     )
     if tool.symlinks.exists(_.privilege == SymlinkPrivilege.Sudo) then
       Left(ToolInstallError.SudoSymlinkNotAllowed(tool.name))
-    else installTool(policy, tool)
+    else installTool(policy, tool, InstallerEventContext.start(InstallerEventObserver.none))
 
   private def installTool(
       policy: ResolvedPolicy,
       tool: ResolvedTool,
-      progressObserver: BinaryDownloadProgressObserver = BinaryDownloadProgressObserver.none
+      eventContext: InstallerEventContext
   ): Either[ToolInstallError, ToolInstallSuccess] =
-    installWithoutPreflight(policy, tool, progressObserver)
+    installWithoutPreflight(policy, tool, eventContext)
 
   private def terminalResult(
       result: Either[ToolInstallError, ToolInstallSuccess]
   ): TerminalToolResult = result match
     case Right(success) => TerminalToolResult.Completed(success.toolName, success.installDir)
     case Left(error)    => TerminalToolResult.Failed(toolName(error), renderInstallError(error))
+
+  private def toolResultEvent(
+      result: TerminalToolResult
+  )(elapsedTime: Duration): InstallerEvent = result match
+    case TerminalToolResult.Completed(toolName, installDir) => InstallerEvent.ToolResult(
+        toolName,
+        ToolResultStatus.Completed,
+        Some(installDir),
+        None,
+        elapsedTime
+      )
+    case TerminalToolResult.Failed(toolName, message) => InstallerEvent.ToolResult(
+        toolName,
+        ToolResultStatus.Failed,
+        None,
+        Some(rootCauseSummary(message)),
+        elapsedTime
+      )
+
+  private def rootCauseSummary(message: String): String =
+    message.linesIterator.nextOption.getOrElse(message)
 
   private def verboseLines(tool: ResolvedTool, verboseOutput: VerboseOutput): Vector[String] =
     verboseOutput match
@@ -643,32 +785,82 @@ final class DirectBinaryInstaller(
   private def installWithoutPreflight(
       policy: ResolvedPolicy,
       tool: ResolvedTool,
-      progressObserver: BinaryDownloadProgressObserver
+      eventContext: InstallerEventContext
   ): Either[ToolInstallError, ToolInstallSuccess] =
-    installDownloadedBinaryOrArchive(policy, tool, progressObserver)
+    installDownloadedBinaryOrArchive(policy, tool, eventContext)
 
   private def installDownloadedBinaryOrArchive(
       policy: ResolvedPolicy,
       tool: ResolvedTool,
-      progressObserver: BinaryDownloadProgressObserver
+      eventContext: InstallerEventContext
   ): Either[ToolInstallError, ToolInstallSuccess] =
     for
-      bytes  <- download(tool, progressObserver)
-      _      <- verifyChecksum(tool, bytes)
-      staged <- stage(tool, bytes)
-      _      <- verifyStagedExecutables(tool, staged)
-      _      <- applyModes(tool, staged)
-      _      <- replace(tool, staged)
-      _      <- verifyExecutables(tool)
-      _      <- createSymlinks(policy, tool)
+      bytes <- download(tool, eventContext)
+      _     <-
+        withPhase(tool, InstallerPhase.VerifyingChecksum, eventContext)(verifyChecksum(tool, bytes))
+      staged <- withPhase(tool, InstallerPhase.Staging, eventContext)(stage(tool, bytes))
+      _      <- withPhase(tool, InstallerPhase.VerifyingExecutables, eventContext)(
+        verifyStagedExecutables(tool, staged)
+      )
+      _ <- withPhase(tool, InstallerPhase.ApplyingModes, eventContext)(applyModes(tool, staged))
+      _ <- withPhase(tool, InstallerPhase.ReplacingInstall, eventContext)(replace(tool, staged))
+      _ <- withPhase(tool, InstallerPhase.VerifyingExecutables, eventContext)(
+        verifyExecutables(tool)
+      )
+      _ <- withPhase(tool, InstallerPhase.CreatingSymlinks, eventContext)(
+        createSymlinks(policy, tool)
+      )
     yield ToolInstallSuccess(tool.name, tool.installDir)
 
   private def download(
       tool: ResolvedTool,
-      progressObserver: BinaryDownloadProgressObserver
-  ): Either[ToolInstallError, Array[Byte]] =
-    downloadClient.download(tool.download.url, progressObserver).left.map: error =>
-      ToolInstallError.DownloadFailed(tool.name, error.url, error.message)
+      eventContext: InstallerEventContext
+  ): Either[ToolInstallError, Array[Byte]] = downloadClient.download(
+    tool.download.url,
+    downloadProgressObserver(tool, eventContext)
+  ).left.map: error =>
+    ToolInstallError.DownloadFailed(tool.name, error.url, error.message)
+
+  private def downloadProgressObserver(
+      tool: ResolvedTool,
+      eventContext: InstallerEventContext
+  ): BinaryDownloadProgressObserver = new BinaryDownloadProgressObserver:
+    def onProgress(progress: BinaryDownloadProgress): Unit = progress match
+      case BinaryDownloadProgress.Started(url, totalBytes) =>
+        eventContext.emit(InstallerEvent.DownloadProgress(
+          tool.name,
+          url,
+          0L,
+          totalBytes,
+          DownloadProgressStatus.Started,
+          _
+        ))
+      case BinaryDownloadProgress.Advanced(url, downloadedBytes, totalBytes) =>
+        eventContext.emit(InstallerEvent.DownloadProgress(
+          tool.name,
+          url,
+          downloadedBytes,
+          totalBytes,
+          DownloadProgressStatus.Advanced,
+          _
+        ))
+      case BinaryDownloadProgress.Finished(url, downloadedBytes, totalBytes) =>
+        eventContext.emit(InstallerEvent.DownloadProgress(
+          tool.name,
+          url,
+          downloadedBytes,
+          totalBytes,
+          DownloadProgressStatus.Finished,
+          _
+        ))
+
+  private def withPhase[A](
+      tool: ResolvedTool,
+      phase: InstallerPhase,
+      eventContext: InstallerEventContext
+  )(result: => Either[ToolInstallError, A]): Either[ToolInstallError, A] =
+    eventContext.emit(InstallerEvent.ToolPhaseChanged(tool.name, phase, _))
+    result
 
   private def verifyChecksum(
       tool: ResolvedTool,
@@ -954,10 +1146,10 @@ private object StatefulApplyRunner:
       prepared: PreparedPlan,
       installer: DirectBinaryInstaller,
       stateStore: ApplyStateStore,
-      progressObserver: BinaryDownloadProgressObserver = BinaryDownloadProgressObserver.none
+      eventContext: InstallerEventContext
   ): InstallerResult = confirmationPreflight(options, prepared.plan) match
     case Some(result) => result
-    case None => runAfterConfirmation(options, prepared, installer, stateStore, progressObserver)
+    case None => runAfterConfirmation(options, prepared, installer, stateStore, eventContext)
 
   private def confirmationPreflight(
       options: InstallerOptions,
@@ -978,18 +1170,22 @@ private object StatefulApplyRunner:
       prepared: PreparedPlan,
       installer: DirectBinaryInstaller,
       stateStore: ApplyStateStore,
-      progressObserver: BinaryDownloadProgressObserver
+      eventContext: InstallerEventContext
   ): InstallerResult = statePath(options, prepared.plan) match
-    case None => installer.installPlan(
+    case None => installer.installPlanWithObserver(
         prepared.plan,
         options.applyConfirmation,
         options.verboseOutput,
-        progressObserver
+        _ => Right(()),
+        eventContext
       )
-    case Some(path) => loadInitialState(path, options.resetState, prepared, stateStore) match
+    case Some(path) =>
+      eventContext.emit(InstallerEvent.LogLine(None, s"state file: $path", _))
+      eventContext.emit(InstallerEvent.ToolPhaseChanged("state", InstallerPhase.LoadingState, _))
+      loadInitialState(path, options.resetState, prepared, stateStore) match
         case Left(error)               => InstallerResult(Vector(renderStateError(error)), 1)
         case Right((statePath, state)) =>
-          runWithState(statePath, state, prepared, options, installer, stateStore, progressObserver)
+          runWithState(statePath, state, prepared, options, installer, stateStore, eventContext)
 
   private def statePath(options: InstallerOptions, plan: ResolvedPlan): Option[String] =
     options.statePath.orElse(plan.policy.stateFile)
@@ -1037,16 +1233,28 @@ private object StatefulApplyRunner:
       options: InstallerOptions,
       installer: DirectBinaryInstaller,
       stateStore: ApplyStateStore,
-      progressObserver: BinaryDownloadProgressObserver
+      eventContext: InstallerEventContext
   ): InstallerResult =
     val completed    = completedToolNames(state)
     val pendingTools = prepared.plan.tools.filterNot(tool => completed(tool.name))
     val skippedLines = prepared.plan.tools
       .filter(tool => completed(tool.name))
-      .map(tool => s"skipped ${tool.name}: already completed in state")
+      .map: tool =>
+        eventContext.emit(InstallerEvent.ToolSkipped(
+          tool.name,
+          "already completed in state",
+          Some(path.toString),
+          _
+        ))
+        s"skipped ${tool.name}: already completed in state"
     val pendingPlan  = prepared.plan.copy(tools = pendingTools)
     var currentState = state
     val terminalObserver: TerminalToolResult => Either[String, Unit] = terminal =>
+      eventContext.emit(InstallerEvent.ToolPhaseChanged(
+        toolName(terminal),
+        InstallerPhase.SavingState,
+        _
+      ))
       currentState = updateState(currentState, terminal)
       stateStore.save(path, currentState).left.map(renderStateError)
     val result = installer.installPlanWithObserver(
@@ -1054,7 +1262,7 @@ private object StatefulApplyRunner:
       options.applyConfirmation,
       options.verboseOutput,
       terminalObserver,
-      progressObserver
+      eventContext
     )
 
     result.copy(lines = skippedLines ++ result.lines)
@@ -1070,6 +1278,10 @@ private object StatefulApplyRunner:
       case TerminalToolResult.Failed(toolName, message) =>
         ApplyStateTool(toolName, "failed", None, Some(message))
     state.copy(tools = replaceTool(state.tools, updatedTool))
+
+  private def toolName(result: TerminalToolResult): String = result match
+    case TerminalToolResult.Completed(toolName, _) => toolName
+    case TerminalToolResult.Failed(toolName, _)    => toolName
 
   private def replaceTool(
       tools: Vector[ApplyStateTool],
@@ -1268,9 +1480,16 @@ private object ManifestFingerprint:
     val _ = builder.append(value.length).append(':').append(value).append('\n')
 
 private object PlaceholderBinaryInstallerService extends BinaryInstallerService:
-  def plan(options: InstallerOptions): InstallerResult = placeholderResult("plan", options)
 
-  def apply(options: InstallerOptions): InstallerResult = placeholderResult("apply", options)
+  def planWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult = placeholderResult("plan", options)
+
+  def applyWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult = placeholderResult("apply", options)
 
   def versions(options: InstallerOptions): InstallerResult = placeholderResult("versions", options)
 
@@ -1287,33 +1506,65 @@ private final class ResolvingBinaryInstallerService(
     stateStore: ApplyStateStore
 ) extends BinaryInstallerService:
 
-  def plan(options: InstallerOptions): InstallerResult =
-    renderSelectedPlan(options, PlanRenderCommand.Plan)
-
-  def apply(options: InstallerOptions): InstallerResult =
-    applyWithProgress(options, BinaryDownloadProgressObserver.none)
+  def planWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult =
+    val eventContext = InstallerEventContext.start(eventObserver)
+    renderSelectedPlanWithEvents(options, PlanRenderCommand.Plan, eventContext)
 
   override def applyWithProgress(
       options: InstallerOptions,
       progressObserver: BinaryDownloadProgressObserver
   ): InstallerResult =
+    applyWithEvents(options, InstallerEventObserver.fromDownloadProgress(progressObserver))
+
+  def applyWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult =
+    val eventContext = InstallerEventContext.start(eventObserver)
     if options.dryRun == DryRunMode.Enabled then
-      renderSelectedPlan(options, PlanRenderCommand.ApplyDryRun)
+      renderSelectedPlanWithEvents(options, PlanRenderCommand.ApplyDryRun, eventContext)
     else
-      resolveSelectedPreparedPlan(options).fold(
-        renderError,
-        prepared =>
-          StatefulApplyRunner.run(options, prepared, installer, stateStore, progressObserver)
-      )
+      eventContext.emit(InstallerEvent.ResolvingStarted(options.configPath, _))
+      resolveSelectedPreparedPlan(options) match
+        case Left(error) =>
+          val result = renderError(error)
+          emitSummary(result, stateFilePath = None, eventContext)
+          result
+        case Right(prepared) =>
+          val statePath = configuredStatePath(options, prepared.plan)
+          eventContext.emit(InstallerEvent.PlanReady(
+            prepared.plan.tools.size,
+            statePath,
+            _
+          ))
+          val result =
+            StatefulApplyRunner.run(options, prepared, installer, stateStore, eventContext)
+          emitSummary(result, statePath, eventContext)
+          result
 
   def versions(options: InstallerOptions): InstallerResult =
     resolveFromOptions(options).fold(renderError, renderVersions)
 
-  private def renderSelectedPlan(
+  private def renderSelectedPlanWithEvents(
       options: InstallerOptions,
-      command: PlanRenderCommand
+      command: PlanRenderCommand,
+      eventContext: InstallerEventContext
   ): InstallerResult =
-    resolveSelectedPlan(options).fold(renderError, plan => PlanRenderer.render(plan, command))
+    eventContext.emit(InstallerEvent.ResolvingStarted(options.configPath, _))
+    resolveSelectedPlan(options) match
+      case Left(error) =>
+        val result = renderError(error)
+        emitSummary(result, stateFilePath = None, eventContext)
+        result
+      case Right(plan) =>
+        val statePath = configuredStatePath(options, plan)
+        eventContext.emit(InstallerEvent.PlanReady(plan.tools.size, statePath, _))
+        val result = PlanRenderer.render(plan, command)
+        emitSummary(result, statePath, eventContext)
+        result
 
   private def resolveSelectedPlan(
       options: InstallerOptions
@@ -1337,6 +1588,29 @@ private final class ResolvingBinaryInstallerService(
             ManifestFingerprint.profile(profile),
             plan
           )
+
+  private def configuredStatePath(
+      options: InstallerOptions,
+      plan: ResolvedPlan
+  ): Option[String] = options.statePath.orElse(plan.policy.stateFile)
+
+  private def emitSummary(
+      result: InstallerResult,
+      stateFilePath: Option[String],
+      eventContext: InstallerEventContext
+  ): Unit =
+    val status =
+      if result.exitCode == 0 then InstallerRunStatus.Succeeded
+      else InstallerRunStatus.Failed
+    eventContext.emit(InstallerEvent.Summary(
+      status,
+      installed = result.lines.count(_.startsWith("installed ")),
+      failed = result.lines.count(_.startsWith("failed ")),
+      skipped = result.lines.count(_.startsWith("skipped ")),
+      exitCode = result.exitCode,
+      stateFilePath = stateFilePath,
+      _
+    ))
 
   private def renderVersions(prepared: PreparedPlan): InstallerResult =
     val references = versionReferences(prepared.profile)

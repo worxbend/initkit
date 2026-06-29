@@ -171,6 +171,13 @@ kind: BinaryDistributionProfile
   imports no UI code. The initial TUI shell returns a concise not-yet-implemented
   message behind the explicit flags only, while default `plan`, `apply`,
   `apply --dry-run`, and `versions` output remains non-interactive.
+- 2026-06-29: T003 of the TUI phase introduced renderer-agnostic core events
+  for plan/apply workflows. Core now exposes `planWithEvents` and
+  `applyWithEvents`, emits resolving, plan-ready, tool-start, phase,
+  download-progress, log, terminal-result, skipped-tool, and summary events, and
+  keeps CLI/TUI code out of core. The CLI apply progress bar and colored summary
+  now consume the structured event path while preserving script-friendly default
+  commands.
 
 ## Current Agent Loop State
 

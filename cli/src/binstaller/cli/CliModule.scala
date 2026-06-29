@@ -1,12 +1,14 @@
 package binstaller.cli
 
 import binstaller.core.BinaryInstallerService
-import binstaller.core.BinaryDownloadProgress
-import binstaller.core.BinaryDownloadProgressObserver
+import binstaller.core.DownloadProgressStatus
 import binstaller.core.DryRunMode
 import binstaller.core.HttpTextClient
+import binstaller.core.InstallerEvent
+import binstaller.core.InstallerEventObserver
 import binstaller.core.InstallerOptions
 import binstaller.core.InstallerResult
+import binstaller.core.InstallerRunStatus
 import binstaller.core.ApplyConfirmation
 import binstaller.core.ResetState
 import binstaller.core.ToolSelection
@@ -260,39 +262,51 @@ private final class ApplyCommand(
     options =>
       if tui then TuiModule.start(TuiRequest(TuiMode.Apply, options))
       else
-        val progressRenderer =
-          CliDownloadProgressRenderer(out, enabled = options.dryRun == DryRunMode.Disabled)
-        val result = service.applyWithProgress(options, progressRenderer)
-        progressRenderer.finish()
-        result.copy(lines = CliApplyOutput.renderLines(result))
+        val eventRenderer =
+          CliApplyEventRenderer(out, enabled = options.dryRun == DryRunMode.Disabled)
+        val result = service.applyWithEvents(options, eventRenderer)
+        eventRenderer.finish()
+        result.copy(lines = CliApplyOutput.colorLines(result.lines) ++ eventRenderer.summaryLines)
   )
 
-private final class CliDownloadProgressRenderer(
+private final class CliApplyEventRenderer(
     out: PrintWriter,
     enabled: Boolean
-) extends BinaryDownloadProgressObserver:
-  private val width                         = 30
-  private var lastBuckets: Map[String, Int] = Map.empty
-  private var activeLineLength: Int         = 0
+) extends InstallerEventObserver:
+  private val width                                   = 30
+  private var lastBuckets: Map[String, Int]           = Map.empty
+  private var activeLineLength: Int                   = 0
+  private var summary: Option[InstallerEvent.Summary] = None
 
-  def onProgress(progress: BinaryDownloadProgress): Unit = if enabled then
-    progress match
-      case BinaryDownloadProgress.Started(url, totalBytes) =>
-        lastBuckets = lastBuckets.updated(url, -1)
-        renderInPlace(renderActive(url, downloadedBytes = 0L, totalBytes))
-      case BinaryDownloadProgress.Advanced(url, downloadedBytes, totalBytes) =>
-        val bucket = progressBucket(downloadedBytes, totalBytes)
-        if bucket != lastBuckets.getOrElse(url, -1) then
-          lastBuckets = lastBuckets.updated(url, bucket)
-          renderInPlace(renderActive(url, downloadedBytes, totalBytes))
-      case BinaryDownloadProgress.Finished(url, downloadedBytes, totalBytes) =>
-        lastBuckets = lastBuckets.updated(url, 100)
-        renderCompleted(renderCompletedLine(url, downloadedBytes, totalBytes))
+  def onEvent(event: InstallerEvent): Unit = event match
+    case progress: InstallerEvent.DownloadProgress if enabled => renderProgress(progress)
+    case value: InstallerEvent.Summary                        => summary = Some(value)
+    case _                                                    => ()
 
   def finish(): Unit = if enabled && activeLineLength > 0 then
     out.print(s"\r${" " * activeLineLength}\r")
     out.flush()
     activeLineLength = 0
+
+  def summaryLines: Vector[String] = summary match
+    case Some(value) => CliApplyOutput.summary(value)
+    case None        => Vector.empty
+
+  private def renderProgress(progress: InstallerEvent.DownloadProgress): Unit =
+    progress.status match
+      case DownloadProgressStatus.Started =>
+        lastBuckets = lastBuckets.updated(progress.url, -1)
+        renderInPlace(renderActive(progress.url, downloadedBytes = 0L, progress.totalBytes))
+      case DownloadProgressStatus.Advanced =>
+        val bucket = progressBucket(progress.downloadedBytes, progress.totalBytes)
+        if bucket != lastBuckets.getOrElse(progress.url, -1) then
+          lastBuckets = lastBuckets.updated(progress.url, bucket)
+          renderInPlace(renderActive(progress.url, progress.downloadedBytes, progress.totalBytes))
+      case DownloadProgressStatus.Finished =>
+        lastBuckets = lastBuckets.updated(progress.url, 100)
+        renderCompleted(
+          renderCompletedLine(progress.url, progress.downloadedBytes, progress.totalBytes)
+        )
 
   private def progressBucket(downloadedBytes: Long, totalBytes: Option[Long]): Int =
     totalBytes.filter(_ > 0L) match
@@ -389,26 +403,25 @@ private final case class ProgressLine(plain: String, styled: String):
 
 private object CliApplyOutput:
 
-  def renderLines(result: InstallerResult): Vector[String] = result.lines.map(colorLine) ++
-    summary(result)
+  def colorLines(lines: Vector[String]): Vector[String] = lines.map(colorLine)
 
   private def colorLine(line: String): String =
     if line.startsWith("installed ") then fansi.Color.Green(line).toString
     else if line.startsWith("failed ") then fansi.Color.Red(line).toString
     else line
 
-  private def summary(result: InstallerResult): Vector[String] =
-    val installed = result.lines.count(_.startsWith("installed "))
-    val failed    = result.lines.count(_.startsWith("failed "))
-    val status    =
-      if result.exitCode == 0 then fansi.Color.Green("🎉 apply completed successfully").toString
+  def summary(event: InstallerEvent.Summary): Vector[String] =
+    val status =
+      if event.status == InstallerRunStatus.Succeeded then
+        fansi.Color.Green("🎉 apply completed successfully").toString
       else fansi.Color.Red("💥 apply finished with errors").toString
     Vector(
       "",
       fansi.Color.Magenta("✨ Summary").toString,
-      s"  ${fansi.Color.Green(s"✅ installed: $installed").toString}",
-      s"  ${fansi.Color.Red(s"❌ failed: $failed").toString}",
-      s"  ${fansi.Color.Cyan(s"🚦 exit code: ${result.exitCode}").toString}",
+      s"  ${fansi.Color.Green(s"✅ installed: ${event.installed}").toString}",
+      s"  ${fansi.Color.Red(s"❌ failed: ${event.failed}").toString}",
+      s"  ${fansi.Color.Yellow(s"⏭ skipped: ${event.skipped}").toString}",
+      s"  ${fansi.Color.Cyan(s"🚦 exit code: ${event.exitCode}").toString}",
       s"  $status"
     )
 
