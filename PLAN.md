@@ -33,6 +33,17 @@ apiVersion: binstaller.io/v1alpha1
 kind: BinaryDistributionProfile
 ```
 
+## Implementation Progress
+
+- 2026-06-29: T001 completed the Scala 3/Mill module skeleton with
+  `app -> cli -> core -> config`, native-image settings, placeholder module
+  sources, and initial tests.
+- 2026-06-29: T002 completed the picocli CLI shell. `binstaller --help`
+  advertises the focused binary installer, global `--config`, `--state`,
+  `--reset-state`, and `--verbose` options, and only the `plan`, `apply`, and
+  `versions` commands. Those commands currently call placeholder core services
+  and fail concisely when `--config` is missing.
+
 ### User Experience Goals
 
 - A user can inspect a concrete install plan before anything changes.
