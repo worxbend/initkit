@@ -114,8 +114,9 @@ object CliModuleTest extends TestSuite:
       val result  = runCli(Vector("apply", "--config", "profile.yaml", "--tui"), service)
 
       assert(result.exitCode == 1)
-      assert(result.out.contains("binstaller apply --tui"))
-      assert(result.out.contains("config read failed for profile.yaml"))
+      assert(result.out.contains("mode apply execution"))
+      assert(result.out.contains("config profile.yaml"))
+      assert(result.out.contains("failed | installed 0 | failed 0 | skipped 0 | exit 1"))
       assert(service.applyOptions.isEmpty)
 
     test("plan prints all example tools in manifest order"):

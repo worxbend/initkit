@@ -198,6 +198,13 @@ kind: BinaryDistributionProfile
   the terminal cleanup path. Overflowing details and logs render visible
   scrollbars, and non-interactive `--tui` invocations fall back to a static
   frame instead of hanging.
+- 2026-06-29: T007 of the TUI phase completed the apply execution renderer.
+  `apply --tui` now consumes core apply events through an execution model,
+  replacing the planning table during apply with current tool, phase, spinner,
+  elapsed time, byte progress, recent logs, compact completed/failed/skipped
+  rows, and final summary. `apply --dry-run --tui` renders the exact dry-run
+  operation lines from the non-interactive apply renderer in a static execution
+  frame without creating install or state paths.
 
 ## Current Agent Loop State
 

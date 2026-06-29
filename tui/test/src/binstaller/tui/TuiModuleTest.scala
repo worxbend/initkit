@@ -1,18 +1,25 @@
 package binstaller.tui
 
 import binstaller.config.ChecksumAlgorithm
+import binstaller.core.DownloadProgressStatus
+import binstaller.core.DryRunMode
 import binstaller.core.HttpTextClient
 import binstaller.core.HttpTextError
+import binstaller.core.InstallerEvent
+import binstaller.core.InstallerPhase
+import binstaller.core.InstallerRunStatus
 import binstaller.core.InstallerOptions
 import binstaller.core.ResetState
 import binstaller.core.ResolutionOptions
 import binstaller.core.ResolvedPlanSnapshot
+import binstaller.core.ToolResultStatus
 import binstaller.core.ToolSelection
 import binstaller.core.VerboseOutput
 import utest.*
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 
 object TuiModuleTest extends TestSuite:
 
@@ -42,20 +49,145 @@ object TuiModuleTest extends TestSuite:
       assert(plain.contains("Logs"))
       assert(plain.contains("q quit"))
 
-    test("apply tui uses apply mode while staying in pre-execution preview"):
+    test("apply dry-run tui renders execution view with concrete dry-run operations"):
       val fixture = writeFixture()
 
       val result = TuiModule.start(
-        TuiRequest(TuiMode.Apply, fixture.options),
+        TuiRequest(TuiMode.Apply, fixture.options.copy(dryRun = DryRunMode.Enabled)),
         FakeHttpTextClient(""),
         testSettings(height = 60).copy(detailScroll = 9)
       )
 
       val plain = stripAnsi(result.lines.mkString("\n"))
       assert(result.exitCode == 0)
-      assert(plain.contains("mode apply"))
-      assert(plain.contains("dry-run operation preview:"))
+      assert(plain.contains("mode apply execution"))
+      assert(plain.contains("Dry-run operations"))
+      assert(plain.contains("binstaller apply --dry-run"))
+      assert(plain.contains("download: https://example.invalid/releases/alpha.tar.gz"))
+      assert(!plain.contains("#   status     name"))
       assert(!Files.exists(fixture.appsDir))
+
+    test("execution view shows active tool progress bytes elapsed and logs"):
+      val fixture = writeFixture()
+      val state   = ExecutionTuiState
+        .initial(
+          TuiRequest(TuiMode.Apply, fixture.options),
+          ExecutionTuiSettings.fromPlanning(testSettings(height = 42))
+        )
+        .onEvent(InstallerEvent.PlanReady(2, Some(fixture.stateFile.toString), elapsed(10)))
+        .onEvent(InstallerEvent.ToolStarted("alpha", InstallerPhase.Downloading, elapsed(20)))
+        .onEvent(InstallerEvent.DownloadProgress(
+          "alpha",
+          fixture.longUrl,
+          512L,
+          Some(1024L),
+          DownloadProgressStatus.Advanced,
+          elapsed(300)
+        ))
+        .onEvent(InstallerEvent.LogLine(
+          Some("alpha"),
+          "extracting selected archive paths",
+          elapsed(350)
+        ))
+
+      val plain = stripAnsi(ExecutionTuiRenderer.render(state.toModel).mkString("\n"))
+      assert(plain.contains("Execution [active]"))
+      assert(plain.contains("current tool alpha"))
+      assert(plain.contains("phase Downloading"))
+      assert(plain.contains("elapsed 300ms"))
+      assert(plain.contains("512 B/1.0 KiB"))
+      assert(plain.contains("alpha: extracting selected archive paths"))
+      assert(!plain.contains("Plan ["))
+
+    test("execution rows show completed and failed tools with root cause styling"):
+      val fixture = writeFixture()
+      val state   = ExecutionTuiState
+        .initial(
+          TuiRequest(TuiMode.Apply, fixture.options),
+          ExecutionTuiSettings.fromPlanning(testSettings(height = 42))
+        )
+        .onEvent(InstallerEvent.ToolResult(
+          "alpha",
+          ToolResultStatus.Completed,
+          Some(fixture.longInstallDir.toString),
+          None,
+          elapsed(1200)
+        ))
+        .onEvent(InstallerEvent.ToolResult(
+          "beta",
+          ToolResultStatus.Failed,
+          None,
+          Some("checksum mismatch: expected abc got def"),
+          elapsed(1500)
+        ))
+        .onEvent(InstallerEvent.Summary(
+          InstallerRunStatus.Failed,
+          installed = 1,
+          failed = 1,
+          skipped = 0,
+          exitCode = 1,
+          stateFilePath = Some(fixture.stateFile.toString),
+          elapsedTime = elapsed(1600)
+        ))
+      val rendered = ExecutionTuiRenderer.render(state.toModel).mkString("\n")
+      val plain    = stripAnsi(rendered)
+
+      assert(plain.contains("ok alpha"))
+      assert(plain.contains("fail beta"))
+      assert(plain.contains("checksum mismatch"))
+      assert(plain.contains("failed | installed 1 | failed 1 | skipped 0 | exit 1"))
+      assert(rendered.contains("\u001b[32m"))
+      assert(rendered.contains("\u001b[31m"))
+
+    test("apply execution TUI closes terminal after dry-run success"):
+      val fixture  = writeFixture()
+      val terminal = FakeTuiTerminal(interactive = true, TuiViewport(100, 38))
+      val result   = TuiModule.startInteractive(
+        TuiRequest(TuiMode.Apply, fixture.options.copy(dryRun = DryRunMode.Enabled)),
+        FakeHttpTextClient(""),
+        testSettings(height = 38),
+        terminal
+      )
+      val rendered = stripAnsi(terminal.rendered.mkString("\n"))
+
+      assert(result.exitCode == 0)
+      assert(result.lines.isEmpty)
+      assert(terminal.opened)
+      assert(terminal.closed)
+      assert(rendered.contains("mode apply execution"))
+      assert(rendered.contains("binstaller apply --dry-run"))
+
+    test("apply execution TUI closes terminal after failure"):
+      val terminal = FakeTuiTerminal(interactive = true, TuiViewport(100, 38))
+      val result   = TuiModule.startInteractive(
+        TuiRequest(TuiMode.Apply, fixtureOptionsForMissingConfig()),
+        FakeHttpTextClient(""),
+        testSettings(height = 38),
+        terminal
+      )
+      val rendered = stripAnsi(terminal.rendered.mkString("\n"))
+
+      assert(result.exitCode == 1)
+      assert(terminal.opened)
+      assert(terminal.closed)
+      assert(rendered.contains("failed"))
+
+    test("non-interactive execution frame avoids alternate-screen terminal sequences"):
+      val fixture  = writeFixture()
+      val terminal = FakeTuiTerminal(interactive = false, TuiViewport(100, 38))
+      val result   = TuiModule.startInteractive(
+        TuiRequest(TuiMode.Apply, fixture.options.copy(dryRun = DryRunMode.Enabled)),
+        FakeHttpTextClient(""),
+        testSettings(height = 38),
+        terminal
+      )
+      val output = result.lines.mkString("\n")
+
+      assert(result.exitCode == 0)
+      assert(!terminal.opened)
+      assert(!terminal.closed)
+      assert(!output.contains("\u001b[?1049h"))
+      assert(output.contains("non-interactive terminal detected"))
 
     test("layout model carries header metadata and plan rows"):
       val fixture = writeFixture()
@@ -398,6 +530,16 @@ object TuiModuleTest extends TestSuite:
     selection = ToolSelection.all
   )
 
+  private def fixtureOptionsForMissingConfig(): InstallerOptions = InstallerOptions(
+    configPath = "/tmp/binstaller-tui-missing-profile.yaml",
+    statePath = None,
+    resetState = ResetState.Disabled,
+    verboseOutput = VerboseOutput.Disabled,
+    selection = ToolSelection.all
+  )
+
+  private def elapsed(millis: Long): Duration = Duration.ofMillis(millis)
+
   private def stripAnsi(output: String): String = output.replaceAll("\u001b\\[[;\\d]*m", "")
 
 private final case class TuiFixture(
@@ -413,3 +555,23 @@ private final case class TuiFixture(
 private final class FakeHttpTextClient(text: String) extends HttpTextClient:
 
   def getText(url: String): Either[HttpTextError, String] = Right(text)
+
+private final class FakeTuiTerminal(
+    interactive: Boolean,
+    initialViewport: TuiViewport
+) extends TuiTerminal:
+  var opened: Boolean                  = false
+  var closed: Boolean                  = false
+  var rendered: Vector[Vector[String]] = Vector.empty
+
+  def isInteractive: Boolean = interactive
+
+  def viewport: TuiViewport = initialViewport
+
+  def open(): Unit = opened = true
+
+  def render(lines: Vector[String]): Unit = rendered = rendered :+ lines
+
+  def readInput(): Option[TuiInput] = None
+
+  def close(): Unit = closed = true

@@ -1,10 +1,16 @@
 package binstaller.tui
 
 import binstaller.config.SymlinkPrivilege
+import binstaller.core.BinaryInstallerService
 import binstaller.core.CoreModule
+import binstaller.core.DownloadProgressStatus
 import binstaller.core.HttpTextClient
+import binstaller.core.InstallerEvent
+import binstaller.core.InstallerEventObserver
 import binstaller.core.InstallerOptions
+import binstaller.core.InstallerPhase
 import binstaller.core.InstallerResult
+import binstaller.core.InstallerRunStatus
 import binstaller.core.ResolvedArchive
 import binstaller.core.ResolvedDownload
 import binstaller.core.ResolvedExtractMapping
@@ -13,10 +19,12 @@ import binstaller.core.ResolvedSymlink
 import binstaller.core.ResolvedTool
 import binstaller.core.ResolvedVersion
 import binstaller.core.ResolvePlanError
+import binstaller.core.ToolResultStatus
 
 import java.io.FileInputStream
 import java.io.InputStream
 import java.io.PrintWriter
+import java.time.Duration
 import scala.sys.process.Process
 
 object TuiModule:
@@ -29,6 +37,32 @@ object TuiModule:
       request: TuiRequest,
       httpTextClient: HttpTextClient,
       settings: PlanningTuiSettings
+  ): InstallerResult = request.mode match
+    case TuiMode.Plan  => startPlanning(request, httpTextClient, settings)
+    case TuiMode.Apply => startApplyExecution(
+        request,
+        BinaryInstallerService.resolving(httpTextClient),
+        ExecutionTuiSettings.fromPlanning(settings)
+      )
+
+  def startInteractive(
+      request: TuiRequest,
+      httpTextClient: HttpTextClient,
+      settings: PlanningTuiSettings,
+      terminal: TuiTerminal
+  ): InstallerResult = request.mode match
+    case TuiMode.Plan  => startPlanningInteractive(request, httpTextClient, settings, terminal)
+    case TuiMode.Apply => startApplyExecutionInteractive(
+        request,
+        BinaryInstallerService.resolving(httpTextClient),
+        ExecutionTuiSettings.fromPlanning(settings),
+        terminal
+      )
+
+  private def startPlanning(
+      request: TuiRequest,
+      httpTextClient: HttpTextClient,
+      settings: PlanningTuiSettings
   ): InstallerResult = ResolvedPlanSnapshot.resolve(request.options, httpTextClient) match
     case Left(error) => InstallerResult(
         s"binstaller ${request.mode.commandName} --tui" +: ResolvePlanError.renderLines(error),
@@ -38,7 +72,7 @@ object TuiModule:
       val model = PlanningTuiModel.fromSnapshot(snapshot, request, settings)
       InstallerResult(PlanningTuiRenderer.render(model), 0)
 
-  def startInteractive(
+  private def startPlanningInteractive(
       request: TuiRequest,
       httpTextClient: HttpTextClient,
       settings: PlanningTuiSettings,
@@ -55,6 +89,37 @@ object TuiModule:
         val lines = PlanningTuiRenderer.render(initial.toModel) :+
           "non-interactive terminal detected; rendered a static TUI frame"
         InstallerResult(lines, 0)
+
+  private def startApplyExecution(
+      request: TuiRequest,
+      service: BinaryInstallerService,
+      settings: ExecutionTuiSettings
+  ): InstallerResult =
+    val observer = CollectingExecutionTuiObserver(request, settings)
+    val result   = service.applyWithEvents(request.options, observer)
+    val state    = observer.state.withResult(result)
+    InstallerResult(ExecutionTuiRenderer.render(state.toModel), result.exitCode)
+
+  private def startApplyExecutionInteractive(
+      request: TuiRequest,
+      service: BinaryInstallerService,
+      settings: ExecutionTuiSettings,
+      terminal: TuiTerminal
+  ): InstallerResult =
+    if !terminal.isInteractive then
+      val result = startApplyExecution(request, service, settings)
+      result.copy(lines =
+        result.lines :+ "non-interactive terminal detected; rendered a static execution TUI frame"
+      )
+    else
+      val observer = RenderingExecutionTuiObserver(request, settings, terminal)
+      terminal.open()
+      try
+        observer.renderCurrent()
+        val result = service.applyWithEvents(request.options, observer)
+        observer.finish(result)
+        result.copy(lines = Vector.empty)
+      finally terminal.close()
 
 enum TuiMode:
   case Plan, Apply
@@ -339,6 +404,446 @@ object PlanningTuiModel:
 
   private def joinPath(parent: String, child: String): String =
     if parent.endsWith("/") then s"$parent$child" else s"$parent/$child"
+
+final case class ExecutionTuiSettings(
+    viewport: TuiViewport,
+    appVersion: String,
+    hostSummary: String,
+    spinnerFrame: Int,
+    logs: Vector[String]
+)
+
+object ExecutionTuiSettings:
+
+  def fromPlanning(settings: PlanningTuiSettings): ExecutionTuiSettings = ExecutionTuiSettings(
+    viewport = settings.viewport,
+    appVersion = settings.appVersion,
+    hostSummary = settings.hostSummary,
+    spinnerFrame = 0,
+    logs = settings.logs
+  )
+
+final case class ExecutionTuiHeader(
+    appName: String,
+    appVersion: String,
+    mode: String,
+    configPath: String,
+    stateFilePath: Option[String],
+    hostSummary: String,
+    elapsedText: String
+)
+
+final case class ExecutionActiveTool(
+    name: String,
+    phase: InstallerPhase,
+    downloadedBytes: Option[Long],
+    totalBytes: Option[Long],
+    elapsedTime: Duration
+)
+
+final case class ExecutionToolRow(
+    name: String,
+    status: PlanningTuiStatus,
+    summary: String,
+    elapsedTime: Duration
+)
+
+final case class ExecutionTuiModel(
+    viewport: TuiViewport,
+    header: ExecutionTuiHeader,
+    active: Option[ExecutionActiveTool],
+    rows: Vector[ExecutionToolRow],
+    logs: Vector[String],
+    dryRunLines: Vector[String],
+    summary: Option[String],
+    spinnerFrame: Int,
+    keybar: String
+)
+
+final case class ExecutionTuiState(
+    request: TuiRequest,
+    viewport: TuiViewport,
+    appVersion: String,
+    hostSummary: String,
+    spinnerFrame: Int,
+    stateFilePath: Option[String],
+    active: Option[ExecutionActiveTool],
+    rows: Vector[ExecutionToolRow],
+    logs: Vector[String],
+    dryRunLines: Vector[String],
+    summary: Option[InstallerEvent.Summary],
+    elapsedTime: Duration
+):
+
+  def toModel: ExecutionTuiModel =
+    val summaryLine = summary.map: value =>
+      val status = value.status match
+        case InstallerRunStatus.Succeeded => "succeeded"
+        case InstallerRunStatus.Failed    => "failed"
+      s"$status | installed ${value.installed} | failed ${value.failed} | " +
+        s"skipped ${value.skipped} | exit ${value.exitCode}"
+    ExecutionTuiModel(
+      viewport = viewport,
+      header = ExecutionTuiHeader(
+        appName = "binstaller",
+        appVersion = appVersion,
+        mode = request.mode.commandName,
+        configPath = request.options.configPath,
+        stateFilePath = stateFilePath,
+        hostSummary = hostSummary,
+        elapsedText = ExecutionTuiRenderer.formatDuration(elapsedTime)
+      ),
+      active = active,
+      rows = rows,
+      logs = logs,
+      dryRunLines = dryRunLines,
+      summary = summaryLine,
+      spinnerFrame = spinnerFrame,
+      keybar = "q/Ctrl+C quit | terminal restored on exit"
+    )
+
+  def onEvent(event: InstallerEvent): ExecutionTuiState =
+    val nextFrame = spinnerFrame + 1
+    event match
+      case InstallerEvent.ResolvingStarted(_, elapsed) => copy(
+          spinnerFrame = nextFrame,
+          active = Some(ExecutionActiveTool(
+            "manifest",
+            InstallerPhase.Resolving,
+            None,
+            None,
+            elapsed
+          )),
+          elapsedTime = elapsed
+        )
+      case InstallerEvent.PlanReady(toolCount, statePath, elapsed) => copy(
+          spinnerFrame = nextFrame,
+          stateFilePath = statePath,
+          active = Some(ExecutionActiveTool(
+            s"$toolCount tool${if toolCount == 1 then "" else "s"}",
+            InstallerPhase.Planning,
+            None,
+            None,
+            elapsed
+          )),
+          logs = appendLog(s"plan ready: $toolCount tool${if toolCount == 1 then "" else "s"}"),
+          elapsedTime = elapsed
+        )
+      case InstallerEvent.ToolStarted(toolName, phase, elapsed) => copy(
+          spinnerFrame = nextFrame,
+          active = Some(ExecutionActiveTool(toolName, phase, None, None, elapsed)),
+          logs = appendLog(s"$toolName: started ${phaseText(phase)}"),
+          elapsedTime = elapsed
+        )
+      case InstallerEvent.ToolPhaseChanged(toolName, phase, elapsed) => copy(
+          spinnerFrame = nextFrame,
+          active = Some(currentActive(toolName, phase, elapsed)),
+          logs = appendLog(s"$toolName: ${phaseText(phase)}"),
+          elapsedTime = elapsed
+        )
+      case InstallerEvent.DownloadProgress(toolName, _, downloaded, total, status, elapsed) =>
+        val statusText = status match
+          case DownloadProgressStatus.Started  => "download started"
+          case DownloadProgressStatus.Advanced => "download advanced"
+          case DownloadProgressStatus.Finished => "download finished"
+        copy(
+          spinnerFrame = nextFrame,
+          active = Some(ExecutionActiveTool(
+            toolName,
+            InstallerPhase.Downloading,
+            Some(downloaded),
+            total,
+            elapsed
+          )),
+          logs = appendLog(
+            s"$toolName: $statusText ${ExecutionTuiRenderer.byteText(downloaded, total)}"
+          ),
+          elapsedTime = elapsed
+        )
+      case InstallerEvent.LogLine(toolName, line, elapsed) =>
+        val prefix = toolName.map(name => s"$name: ").getOrElse("")
+        copy(
+          spinnerFrame = nextFrame,
+          logs = appendLog(prefix + line),
+          elapsedTime = elapsed
+        )
+      case InstallerEvent.ToolResult(toolName, status, installDir, failureSummary, elapsed) =>
+        val rowStatus = status match
+          case ToolResultStatus.Completed => PlanningTuiStatus.Completed
+          case ToolResultStatus.Failed    => PlanningTuiStatus.Failed
+        val rowSummary = status match
+          case ToolResultStatus.Completed =>
+            installDir.map(path => s"installed to $path").getOrElse("completed")
+          case ToolResultStatus.Failed => failureSummary.getOrElse("failed")
+        copy(
+          spinnerFrame = nextFrame,
+          active = None,
+          rows = rows :+ ExecutionToolRow(toolName, rowStatus, rowSummary, elapsed),
+          logs = appendLog(s"$toolName: $rowSummary"),
+          elapsedTime = elapsed
+        )
+      case InstallerEvent.ToolSkipped(toolName, reason, statePath, elapsed) => copy(
+          spinnerFrame = nextFrame,
+          stateFilePath = statePath.orElse(stateFilePath),
+          active = None,
+          rows = rows :+ ExecutionToolRow(toolName, PlanningTuiStatus.Skipped, reason, elapsed),
+          logs = appendLog(s"$toolName: skipped - $reason"),
+          elapsedTime = elapsed
+        )
+      case value @ InstallerEvent.Summary(_, _, _, _, _, statePath, elapsed) => copy(
+          spinnerFrame = nextFrame,
+          active = None,
+          stateFilePath = statePath.orElse(stateFilePath),
+          summary = Some(value),
+          elapsedTime = elapsed
+        )
+
+  def withResult(result: InstallerResult): ExecutionTuiState =
+    val dryRunResultLines =
+      if request.options.dryRun == binstaller.core.DryRunMode.Enabled then result.lines
+      else Vector.empty
+    val failureLogs =
+      if result.exitCode != 0 && rows.isEmpty then result.lines
+      else Vector.empty
+    copy(
+      dryRunLines = dryRunResultLines,
+      logs = (logs ++ failureLogs).takeRight(80)
+    )
+
+  private def currentActive(
+      toolName: String,
+      phase: InstallerPhase,
+      elapsed: Duration
+  ): ExecutionActiveTool = active.filter(_.name == toolName) match
+    case Some(value) => value.copy(phase = phase, elapsedTime = elapsed)
+    case None        => ExecutionActiveTool(toolName, phase, None, None, elapsed)
+
+  private def appendLog(line: String): Vector[String] = (logs :+ line).takeRight(80)
+
+  private def phaseText(phase: InstallerPhase): String = phase.toString
+
+object ExecutionTuiState:
+
+  def initial(request: TuiRequest, settings: ExecutionTuiSettings): ExecutionTuiState =
+    ExecutionTuiState(
+      request = request,
+      viewport = settings.viewport,
+      appVersion = settings.appVersion,
+      hostSummary = settings.hostSummary,
+      spinnerFrame = settings.spinnerFrame,
+      stateFilePath = None,
+      active = Some(ExecutionActiveTool(
+        "manifest",
+        InstallerPhase.Resolving,
+        None,
+        None,
+        Duration.ZERO
+      )),
+      rows = Vector.empty,
+      logs = settings.logs,
+      dryRunLines = Vector.empty,
+      summary = None,
+      elapsedTime = Duration.ZERO
+    )
+
+private final class CollectingExecutionTuiObserver(
+    request: TuiRequest,
+    settings: ExecutionTuiSettings
+) extends InstallerEventObserver:
+  private var currentState: ExecutionTuiState = ExecutionTuiState.initial(request, settings)
+
+  def state: ExecutionTuiState = currentState
+
+  def onEvent(event: InstallerEvent): Unit = currentState = currentState.onEvent(event)
+
+private final class RenderingExecutionTuiObserver(
+    request: TuiRequest,
+    settings: ExecutionTuiSettings,
+    terminal: TuiTerminal
+) extends InstallerEventObserver:
+
+  private var currentState: ExecutionTuiState =
+    ExecutionTuiState.initial(request, settings.copy(viewport = terminal.viewport))
+
+  def onEvent(event: InstallerEvent): Unit =
+    currentState = currentState.onEvent(event)
+    renderCurrent()
+
+  def renderCurrent(): Unit = terminal.render(ExecutionTuiRenderer.render(currentState.toModel))
+
+  def finish(result: InstallerResult): Unit =
+    currentState = currentState.withResult(result)
+    renderCurrent()
+
+object ExecutionTuiRenderer:
+
+  def render(model: ExecutionTuiModel): Vector[String] =
+    val width  = model.viewport.width.max(48)
+    val layout = ExecutionTuiLayout.forViewport(model.viewport)
+    header(model, width) ++
+      active(model.active, model.spinnerFrame, width) ++
+      resultRows(model.rows, layout, width) ++
+      dryRun(model.dryRunLines, width) ++
+      logs(model.logs, layout, width) ++
+      footer(model, width)
+
+  def formatDuration(duration: Duration): String =
+    val millis = duration.toMillis.max(0L)
+    if millis < 1000L then s"${millis}ms"
+    else f"${millis.toDouble / 1000.0}%.1fs"
+
+  def byteText(downloadedBytes: Long, totalBytes: Option[Long]): String = totalBytes match
+    case Some(total) => s"${formatBytes(downloadedBytes)}/${formatBytes(total)}"
+    case None        => formatBytes(downloadedBytes)
+
+  private def header(model: ExecutionTuiModel, width: Int): Vector[String] =
+    val header = model.header
+    Vector(
+      PlanningTuiStatus.style(
+        PlanningTuiStatus.Active,
+        fit(
+          s"${header.appName} ${header.appVersion} | mode ${header.mode} execution | " +
+            s"elapsed ${header.elapsedText}",
+          width
+        )
+      ),
+      s"config ${header.configPath}",
+      s"state ${header.stateFilePath.getOrElse("not configured")}",
+      fit(s"host ${header.hostSummary}", width),
+      separator(width)
+    )
+
+  private def active(
+      active: Option[ExecutionActiveTool],
+      spinnerFrame: Int,
+      width: Int
+  ): Vector[String] =
+    val lines = active match
+      case Some(value) =>
+        val progress = progressText(value.downloadedBytes, value.totalBytes)
+        Vector(
+          paneTitle("Execution", active = true, width),
+          fit(
+            s"${spinner(spinnerFrame)} current tool ${value.name} | phase ${value.phase} | " +
+              s"elapsed ${formatDuration(value.elapsedTime)}",
+            width
+          ),
+          fit(progress, width)
+        )
+      case None => Vector(
+          paneTitle("Execution", active = false, width),
+          fit("no active tool", width)
+        )
+    lines :+ separator(width)
+
+  private def resultRows(
+      rows: Vector[ExecutionToolRow],
+      layout: ExecutionTuiLayout,
+      width: Int
+  ): Vector[String] =
+    val visible = rows.takeRight(layout.rowBodyHeight)
+    val body    =
+      if visible.isEmpty then Vector(fit("no completed tools yet", width))
+      else visible.map(rowLine(_, width))
+    Vector(paneTitle("Completed / Failed", active = false, width)) ++ body ++
+      Vector(separator(width))
+
+  private def rowLine(row: ExecutionToolRow, width: Int): String =
+    val prefix = row.status match
+      case PlanningTuiStatus.Completed => "ok"
+      case PlanningTuiStatus.Failed    => "fail"
+      case PlanningTuiStatus.Skipped   => "skip"
+      case _                           => row.status.label
+    val plain = fit(
+      s"$prefix ${cell(row.name, 18)} ${cell(formatDuration(row.elapsedTime), 8)} ${row.summary}",
+      width
+    )
+    PlanningTuiStatus.style(row.status, plain)
+
+  private def dryRun(
+      lines: Vector[String],
+      width: Int
+  ): Vector[String] =
+    if lines.isEmpty then Vector.empty
+    else
+      val body = lines
+      Vector(paneTitle("Dry-run operations", active = false, width)) ++ body ++
+        Vector(separator(width))
+
+  private def logs(lines: Vector[String], layout: ExecutionTuiLayout, width: Int): Vector[String] =
+    val visible = lines.takeRight(layout.logBodyHeight)
+    val body    =
+      if visible.isEmpty then Vector(fit("no recent log lines", width))
+      else visible.map(line => fit(line, width))
+    Vector(paneTitle("Recent Logs", active = false, width)) ++ body ++ Vector(separator(width))
+
+  private def footer(model: ExecutionTuiModel, width: Int): Vector[String] =
+    val status = model.summary.getOrElse("running")
+    Vector(
+      fit(status, width),
+      PlanningTuiStatus.style(PlanningTuiStatus.Active, fit(model.keybar, width))
+    )
+
+  private def progressText(downloadedBytes: Option[Long], totalBytes: Option[Long]): String =
+    downloadedBytes match
+      case Some(downloaded) => totalBytes.filter(_ > 0L) match
+          case Some(total) =>
+            s"${progressBar(downloaded, total)} ${byteText(downloaded, Some(total))}"
+          case None => s"progress bytes ${byteText(downloaded, None)}"
+      case None => "progress waiting for tool events"
+
+  private def progressBar(downloadedBytes: Long, totalBytes: Long): String =
+    val width  = 28
+    val ratio  = (downloadedBytes.toDouble / totalBytes.toDouble).max(0.0).min(1.0)
+    val filled = (ratio * width).round.toInt
+    val empty  = width - filled
+    val pct    = (ratio * 100.0).round.toInt
+    s"[${"█" * filled}${"░" * empty}] $pct%"
+
+  private def spinner(frame: Int): String = Vector("|", "/", "-", "\\")(frame.abs % 4)
+
+  private def paneTitle(title: String, active: Boolean, width: Int): String =
+    val label = if active then s"$title [active]" else s"$title [idle]"
+    val line  = fit(label, width)
+    if active then PlanningTuiStatus.style(PlanningTuiStatus.Active, line) else line
+
+  private def formatBytes(bytes: Long): String =
+    val kib = 1024.0
+    val mib = kib * 1024.0
+    val gib = mib * 1024.0
+    if bytes >= gib then f"${bytes / gib}%.1f GiB"
+    else if bytes >= mib then f"${bytes / mib}%.1f MiB"
+    else if bytes >= kib then f"${bytes / kib}%.1f KiB"
+    else s"$bytes B"
+
+  private def separator(width: Int): String = "-" * width
+
+  private def cell(value: String, width: Int): String =
+    val clipped = truncate(value, width)
+    clipped + (" " * (width - clipped.length).max(0))
+
+  private def fit(value: String, width: Int): String = cell(value, width)
+
+  private def truncate(value: String, width: Int): String =
+    if width <= 0 then ""
+    else if value.length <= width then value
+    else if width == 1 then "…"
+    else s"${value.take(width - 1)}…"
+
+final case class ExecutionTuiLayout(
+    rowBodyHeight: Int,
+    dryRunBodyHeight: Int,
+    logBodyHeight: Int
+)
+
+object ExecutionTuiLayout:
+
+  def forViewport(viewport: TuiViewport): ExecutionTuiLayout =
+    val usable = (viewport.height.max(18) - 15).max(6)
+    val rows   = usable.min(6).max(2)
+    val dryRun = (((usable - rows) * 2) / 3).max(0).min(30)
+    val logs   = (usable - rows - dryRun).max(3)
+    ExecutionTuiLayout(rows, dryRun, logs)
 
 enum TuiPane(val label: String):
   case Plan    extends TuiPane("plan")
