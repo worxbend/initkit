@@ -165,6 +165,12 @@ kind: BinaryDistributionProfile
   screen, or mouse support cannot be kept correct with local terminal
   primitives. The explicit user entrypoints are `plan --tui` and
   `apply --tui`; default `plan` and `apply` remain script-friendly.
+- 2026-06-29: T002 of the TUI phase added the dedicated `tui` module and wired
+  explicit `plan --tui` / `apply --tui` CLI flags. The module graph is acyclic:
+  `app -> cli -> {core, tui}`, `tui -> core`, and `core -> config`; core still
+  imports no UI code. The initial TUI shell returns a concise not-yet-implemented
+  message behind the explicit flags only, while default `plan`, `apply`,
+  `apply --dry-run`, and `versions` output remains non-interactive.
 
 ## Current Agent Loop State
 
@@ -172,7 +178,8 @@ As of 2026-06-29, the active product is no longer the original broad
 bootstrapper or the earlier script-capable binary installer. The working shape
 is:
 
-- `app -> cli -> core -> config` remains the active runtime graph.
+- `app -> cli -> {core, tui}`, `tui -> core`, and `core -> config` remains the
+  active runtime graph; core does not depend on CLI or TUI code.
 - `config.example.yaml` is the executable profile for the current binary-tool
   surface.
 - Direct downloads, archive extraction, checksums, symlinks, state/resume,

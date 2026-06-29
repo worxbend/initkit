@@ -75,8 +75,10 @@ object ConfigModuleTest extends TestSuite:
       val archive   =
         kustomize.spec.download.archive.getOrElse(abort("missing Kustomize archive spec"))
 
-      assert(kustomize.spec.download.url ==
-        "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/${version}/kustomize_${version}_linux_amd64.tar.gz")
+      assert(
+        kustomize.spec.download.url ==
+          "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/${version}/kustomize_${version}_linux_amd64.tar.gz"
+      )
       assert(archive.archiveType == ArchiveType.TarGz)
       assert(archive.extract.files.map(mapping => mapping.from -> mapping.to) ==
         Vector("kustomize" -> "bin/kustomize"))
@@ -357,32 +359,32 @@ object ConfigModuleTest extends TestSuite:
 
   private val unsupportedInstallerYaml: String =
     """
-       |apiVersion: binstaller.io/v1alpha1
-       |kind: BinaryDistributionProfile
-       |metadata:
-       |  name: unsupported-installer
-       |spec:
-       |  policy:
-       |    appsDir: "${HOME}/.apps"
-       |  vars: {}
-       |  versions:
-       |    alpha: "1.0.0"
-       |  plan:
-       |    - name: alpha
-       |      kind: binary-tool
-       |      spec:
-       |        versionRef: alpha
-       |        installDir: "${appsDir}/alpha"
-       |        download:
-       |          url: https://example.invalid/install.sh
-       |          filename: install.sh
-       |        installer:
-       |          shell: sh
-       |          args:
-       |            - "${downloadPath}"
-       |        executables:
-       |          - path: bin/alpha
-       |""".stripMargin
+      |apiVersion: binstaller.io/v1alpha1
+      |kind: BinaryDistributionProfile
+      |metadata:
+      |  name: unsupported-installer
+      |spec:
+      |  policy:
+      |    appsDir: "${HOME}/.apps"
+      |  vars: {}
+      |  versions:
+      |    alpha: "1.0.0"
+      |  plan:
+      |    - name: alpha
+      |      kind: binary-tool
+      |      spec:
+      |        versionRef: alpha
+      |        installDir: "${appsDir}/alpha"
+      |        download:
+      |          url: https://example.invalid/install.sh
+      |          filename: install.sh
+      |        installer:
+      |          shell: sh
+      |          args:
+      |            - "${downloadPath}"
+      |        executables:
+      |          - path: bin/alpha
+      |""".stripMargin
 
   private def sudoSymlinkYaml(allowSudoSymlinks: Boolean): String =
     s"""

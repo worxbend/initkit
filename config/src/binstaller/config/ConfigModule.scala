@@ -504,8 +504,7 @@ private object ManifestDecoder:
   private def unsupportedInstaller(map: YamlMap, path: String): DecodeResult[Unit] =
     map.get("installer") match
       case None    => DecodeResult.valid(())
-      case Some(_) =>
-        DecodeResult.invalid(
+      case Some(_) => DecodeResult.invalid(
           (),
           path,
           "installer scripts are not supported; use direct binary or archive download"

@@ -3,7 +3,6 @@ package binstaller.cli
 import binstaller.core.BinaryInstallerService
 import binstaller.core.BinaryDownloadProgress
 import binstaller.core.BinaryDownloadProgressObserver
-import binstaller.core.CoreModule
 import binstaller.core.DryRunMode
 import binstaller.core.HttpTextClient
 import binstaller.core.InstallerOptions
@@ -12,6 +11,9 @@ import binstaller.core.ApplyConfirmation
 import binstaller.core.ResetState
 import binstaller.core.ToolSelection
 import binstaller.core.VerboseOutput
+import binstaller.tui.TuiMode
+import binstaller.tui.TuiModule
+import binstaller.tui.TuiRequest
 import picocli.CommandLine
 import picocli.CommandLine.Option as CliOption
 import picocli.CommandLine.Command
@@ -22,7 +24,7 @@ import java.net.URI
 import java.util.concurrent.Callable
 
 object CliModule:
-  def modulePath: Vector[String] = CoreModule.modulePath :+ "cli"
+  def modulePath: Vector[String] = TuiModule.modulePath :+ "cli"
 
   def run(args: Vector[String]): Int = run(
     args,
@@ -42,9 +44,28 @@ object CliModule:
     val commandLine = CommandLine(root)
     commandLine.setOut(out)
     commandLine.setErr(err)
-    commandLine.addSubcommand("plan", PlanCommand(root, service, out, err))
-    commandLine.addSubcommand("apply", ApplyCommand(root, service, out, err))
-    commandLine.addSubcommand("versions", VersionsCommand(root, service, out, err))
+    commandLine.addSubcommand(
+      "plan",
+      subcommandLine(PlanCommand(root, service, out, err), out, err)
+    )
+    commandLine.addSubcommand(
+      "apply",
+      subcommandLine(ApplyCommand(root, service, out, err), out, err)
+    )
+    commandLine.addSubcommand(
+      "versions",
+      subcommandLine(VersionsCommand(root, service, out, err), out, err)
+    )
+    commandLine
+
+  private def subcommandLine(
+      command: Callable[Integer],
+      out: PrintWriter,
+      err: PrintWriter
+  ): CommandLine =
+    val commandLine = CommandLine(command)
+    commandLine.setOut(out)
+    commandLine.setErr(err)
     commandLine
 
 private final case class GlobalOptions(
@@ -172,6 +193,7 @@ private abstract class SelectableCommand(
 
 @Command(
   name = "plan",
+  mixinStandardHelpOptions = true,
   description = Array("Render the binary installer plan without changing files.")
 )
 private final class PlanCommand(
@@ -180,12 +202,26 @@ private final class PlanCommand(
     out: PrintWriter,
     err: PrintWriter
 ) extends SelectableCommand(root, out, err):
+  private var tui: Boolean = false
 
-  override def call(): Integer =
-    executeWithOptions(_.copy(selection = selection, dryRun = DryRunMode.Enabled), service.plan)
+  @CliOption(
+    names = Array("--tui"),
+    description = Array(
+      "Open the explicit planning TUI entrypoint. Default plan output remains script-friendly."
+    )
+  )
+  def setTui(value: Boolean): Unit = tui = value
+
+  override def call(): Integer = executeWithOptions(
+    _.copy(selection = selection, dryRun = DryRunMode.Enabled),
+    options =>
+      if tui then TuiModule.start(TuiRequest(TuiMode.Plan, options))
+      else service.plan(options)
+  )
 
 @Command(
   name = "apply",
+  mixinStandardHelpOptions = true,
   description = Array("Apply the binary installer plan.")
 )
 private final class ApplyCommand(
@@ -196,6 +232,7 @@ private final class ApplyCommand(
 ) extends SelectableCommand(root, out, err):
   private var dryRun: DryRunMode                   = DryRunMode.Disabled
   private var applyConfirmation: ApplyConfirmation = ApplyConfirmation.Disabled
+  private var tui: Boolean                         = false
 
   @CliOption(
     names = Array("--dry-run"),
@@ -210,26 +247,36 @@ private final class ApplyCommand(
   def setApplyConfirmation(value: Boolean): Unit =
     applyConfirmation = ApplyConfirmation.fromFlag(value)
 
+  @CliOption(
+    names = Array("--tui"),
+    description = Array(
+      "Open the explicit apply TUI entrypoint. Default apply output remains script-friendly."
+    )
+  )
+  def setTui(value: Boolean): Unit = tui = value
+
   override def call(): Integer = executeWithOptions(
     _.copy(selection = selection, dryRun = dryRun, applyConfirmation = applyConfirmation),
     options =>
-      val progressRenderer =
-        CliDownloadProgressRenderer(out, enabled = options.dryRun == DryRunMode.Disabled)
-      val result = service.applyWithProgress(options, progressRenderer)
-      progressRenderer.finish()
-      result.copy(lines = CliApplyOutput.renderLines(result))
+      if tui then TuiModule.start(TuiRequest(TuiMode.Apply, options))
+      else
+        val progressRenderer =
+          CliDownloadProgressRenderer(out, enabled = options.dryRun == DryRunMode.Disabled)
+        val result = service.applyWithProgress(options, progressRenderer)
+        progressRenderer.finish()
+        result.copy(lines = CliApplyOutput.renderLines(result))
   )
 
 private final class CliDownloadProgressRenderer(
     out: PrintWriter,
     enabled: Boolean
 ) extends BinaryDownloadProgressObserver:
-  private val width = 30
+  private val width                         = 30
   private var lastBuckets: Map[String, Int] = Map.empty
   private var activeLineLength: Int         = 0
 
-  def onProgress(progress: BinaryDownloadProgress): Unit =
-    if enabled then progress match
+  def onProgress(progress: BinaryDownloadProgress): Unit = if enabled then
+    progress match
       case BinaryDownloadProgress.Started(url, totalBytes) =>
         lastBuckets = lastBuckets.updated(url, -1)
         renderInPlace(renderActive(url, downloadedBytes = 0L, totalBytes))
@@ -242,11 +289,10 @@ private final class CliDownloadProgressRenderer(
         lastBuckets = lastBuckets.updated(url, 100)
         renderCompleted(renderCompletedLine(url, downloadedBytes, totalBytes))
 
-  def finish(): Unit =
-    if enabled && activeLineLength > 0 then
-      out.print(s"\r${" " * activeLineLength}\r")
-      out.flush()
-      activeLineLength = 0
+  def finish(): Unit = if enabled && activeLineLength > 0 then
+    out.print(s"\r${" " * activeLineLength}\r")
+    out.flush()
+    activeLineLength = 0
 
   private def progressBucket(downloadedBytes: Long, totalBytes: Option[Long]): Int =
     totalBytes.filter(_ > 0L) match
@@ -272,10 +318,10 @@ private final class CliDownloadProgressRenderer(
       downloadedBytes: Long,
       totalBytes: Option[Long]
   ): ProgressLine =
-    val label = fileName(url)
-    val bar   = progressBar(downloadedBytes, totalBytes)
-    val bytes = byteText(downloadedBytes, totalBytes)
-    val plain = s"✅ completed $label ${bar.plain} $bytes"
+    val label  = fileName(url)
+    val bar    = progressBar(downloadedBytes, totalBytes)
+    val bytes  = byteText(downloadedBytes, totalBytes)
+    val plain  = s"✅ completed $label ${bar.plain} $bytes"
     val styled = fansi.Color.Green(s"✅ completed $label").toString +
       s" ${bar.styled} ${fansi.Color.Green(bytes).toString}"
     ProgressLine(plain, styled)
@@ -317,10 +363,9 @@ private final class CliDownloadProgressRenderer(
     else if percent >= 70 then fansi.Color.Yellow
     else fansi.Color.Cyan
 
-  private def byteText(downloadedBytes: Long, totalBytes: Option[Long]): String =
-    totalBytes match
-      case Some(total) => s"${formatBytes(downloadedBytes)}/${formatBytes(total)}"
-      case None        => formatBytes(downloadedBytes)
+  private def byteText(downloadedBytes: Long, totalBytes: Option[Long]): String = totalBytes match
+    case Some(total) => s"${formatBytes(downloadedBytes)}/${formatBytes(total)}"
+    case None        => formatBytes(downloadedBytes)
 
   private def formatBytes(bytes: Long): String =
     val kib = 1024.0
@@ -344,8 +389,8 @@ private final case class ProgressLine(plain: String, styled: String):
 
 private object CliApplyOutput:
 
-  def renderLines(result: InstallerResult): Vector[String] =
-    result.lines.map(colorLine) ++ summary(result)
+  def renderLines(result: InstallerResult): Vector[String] = result.lines.map(colorLine) ++
+    summary(result)
 
   private def colorLine(line: String): String =
     if line.startsWith("installed ") then fansi.Color.Green(line).toString
@@ -369,6 +414,7 @@ private object CliApplyOutput:
 
 @Command(
   name = "versions",
+  mixinStandardHelpOptions = true,
   description = Array("Resolve and print binary tool versions.")
 )
 private final class VersionsCommand(

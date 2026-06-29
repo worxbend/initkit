@@ -52,8 +52,14 @@ object core extends BinstallerModule:
     Seq(Deps.sttpCore, Deps.oxCore, Deps.upickle, Deps.osLib)
   }
 
-object cli extends BinstallerModule:
+object tui extends BinstallerModule:
   def moduleDeps: Seq[JavaModule] = Seq(core)
+  def mvnDeps: T[Seq[mill.javalib.Dep]] = Task {
+    Seq(Deps.fansi)
+  }
+
+object cli extends BinstallerModule:
+  def moduleDeps: Seq[JavaModule] = Seq(core, tui)
   def mvnDeps: T[Seq[mill.javalib.Dep]] = Task {
     Seq(Deps.picocli, Deps.fansi)
   }

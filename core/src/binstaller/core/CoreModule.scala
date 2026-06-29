@@ -94,11 +94,13 @@ object ApplyConfirmation:
 trait BinaryInstallerService:
   def plan(options: InstallerOptions): InstallerResult
   def apply(options: InstallerOptions): InstallerResult
+
   def applyWithProgress(
       options: InstallerOptions,
       progressObserver: BinaryDownloadProgressObserver
   ): InstallerResult = progressObserver match
     case _ => apply(options)
+
   def versions(options: InstallerOptions): InstallerResult
 
 object BinaryInstallerService:
@@ -202,13 +204,12 @@ private object CommandFailureDetails:
       output: CommandOutput
   ): String =
     val command = renderArgv(spec.argv)
-    val details =
-      Vector(s"  command: $command") ++
-        Vector(s"  cwd: ${spec.cwd}") ++
-        renderEnv(spec.env) ++
-        exitCode.map(code => s"  exit code: $code").toVector ++
-        renderOutputTail("stdout", output.stdout) ++
-        renderOutputTail("stderr", output.stderr)
+    val details = Vector(s"  command: $command") ++
+      Vector(s"  cwd: ${spec.cwd}") ++
+      renderEnv(spec.env) ++
+      exitCode.map(code => s"  exit code: $code").toVector ++
+      renderOutputTail("stdout", output.stdout) ++
+      renderOutputTail("stderr", output.stderr)
     (s"$context: $command: $message" +: details).mkString("\n")
 
   private def renderArgv(argv: Vector[String]): String = argv.map(shellQuote).mkString(" ")
@@ -232,7 +233,7 @@ private object CommandFailureDetails:
   private def renderOutputTail(label: String, text: String): Vector[String] =
     val maxRenderedLines = 40
     val lines            = text.linesIterator.toVector.filterNot(_.isBlank)
-    val omitted =
+    val omitted          =
       if lines.length > maxRenderedLines then
         Vector(s"  $label: ... omitted ${lines.length - maxRenderedLines} earlier line(s)")
       else Vector.empty
@@ -494,14 +495,13 @@ final class DirectBinaryInstaller(
       applyConfirmation: ApplyConfirmation = ApplyConfirmation.Disabled,
       verboseOutput: VerboseOutput = VerboseOutput.Disabled,
       progressObserver: BinaryDownloadProgressObserver = BinaryDownloadProgressObserver.none
-  ): InstallerResult =
-    installPlanWithObserver(
-      plan,
-      applyConfirmation,
-      verboseOutput,
-      _ => Right(()),
-      progressObserver
-    )
+  ): InstallerResult = installPlanWithObserver(
+    plan,
+    applyConfirmation,
+    verboseOutput,
+    _ => Right(()),
+    progressObserver
+  )
 
   def installPlanWithObserver(
       plan: ResolvedPlan,
@@ -519,7 +519,7 @@ final class DirectBinaryInstaller(
         terminalObserver,
         progressObserver
       )
-      val lines    = observed.lines ++
+      val lines = observed.lines ++
         observed.persistenceError.map(message => s"state write failed: $message").toVector
       val exitCode =
         if observed.results.exists(_.isInstanceOf[TerminalToolResult.Failed]) ||
@@ -737,17 +737,16 @@ final class DirectBinaryInstaller(
   private def verifyStagedExecutables(
       tool: ResolvedTool,
       stagedInstall: StagedInstall
-  ): Either[ToolInstallError, Unit] =
-    tool.executables
-      .map: executable =>
-        resolveInsideStaging(tool, stagedInstall, executable.path).flatMap: path =>
-          if Files.isRegularFile(path) then Right(())
-          else Left(ToolInstallError.MissingExecutable(tool.name, executable.path))
-      .collectFirst:
-        case Left(error) => error
-    match
-      case Some(error) => Left(error)
-      case None        => Right(())
+  ): Either[ToolInstallError, Unit] = tool.executables
+    .map: executable =>
+      resolveInsideStaging(tool, stagedInstall, executable.path).flatMap: path =>
+        if Files.isRegularFile(path) then Right(())
+        else Left(ToolInstallError.MissingExecutable(tool.name, executable.path))
+    .collectFirst:
+      case Left(error) => error
+  match
+    case Some(error) => Left(error)
+    case None        => Right(())
 
   private def resolveInsideStaging(
       tool: ResolvedTool,
@@ -876,42 +875,36 @@ final class DirectBinaryInstaller(
     case ToolInstallError.SudoSymlinkConfirmationRequired(toolName) => toolName
 
   private def renderInstallError(error: ToolInstallError): String = error match
-    case ToolInstallError.DownloadFailed(toolName, url, message) =>
-      detailBlock(
+    case ToolInstallError.DownloadFailed(toolName, url, message) => detailBlock(
         s"download: $url: $message",
         Vector("tool" -> toolName, "url" -> url, "message" -> message)
       )
-    case ToolInstallError.ChecksumMismatch(toolName, expected, actual) =>
-      detailBlock(
+    case ToolInstallError.ChecksumMismatch(toolName, expected, actual) => detailBlock(
         s"checksum: sha256 expected $expected, got $actual",
         Vector(
-          "tool" -> toolName,
+          "tool"            -> toolName,
           "expected sha256" -> expected,
-          "actual sha256" -> actual,
+          "actual sha256"   -> actual,
           "suggestion" -> "verify the downloaded artifact before updating the manifest checksum"
         )
       )
     case ToolInstallError.StagingFailed(toolName, message) =>
       detailBlock(s"staging: $message", Vector("tool" -> toolName, "message" -> message))
-    case ToolInstallError.ModeApplicationFailed(toolName, path, mode, message) =>
-      detailBlock(
+    case ToolInstallError.ModeApplicationFailed(toolName, path, mode, message) => detailBlock(
         s"mode: $mode for $path: $message",
         Vector("tool" -> toolName, "path" -> path, "mode" -> mode, "message" -> message)
       )
     case ToolInstallError.ReplacementFailed(toolName, message) =>
       detailBlock(s"replacement: $message", Vector("tool" -> toolName, "message" -> message))
-    case ToolInstallError.ArchiveExtractionFailed(toolName, message) =>
-      detailBlock(
+    case ToolInstallError.ArchiveExtractionFailed(toolName, message) => detailBlock(
         s"archive extraction: $message",
         Vector("tool" -> toolName, "message" -> message)
       )
-    case ToolInstallError.MissingExecutable(toolName, path) =>
-      detailBlock(
+    case ToolInstallError.MissingExecutable(toolName, path) => detailBlock(
         s"verify executable: missing $path",
         Vector("tool" -> toolName, "expected path" -> path)
       )
-    case ToolInstallError.SymlinkFailed(toolName, path, target, message) =>
-      detailBlock(
+    case ToolInstallError.SymlinkFailed(toolName, path, target, message) => detailBlock(
         s"symlink: $target -> $path: $message",
         Vector("tool" -> toolName, "path" -> path, "target" -> target, "message" -> message)
       )
@@ -964,8 +957,7 @@ private object StatefulApplyRunner:
       progressObserver: BinaryDownloadProgressObserver = BinaryDownloadProgressObserver.none
   ): InstallerResult = confirmationPreflight(options, prepared.plan) match
     case Some(result) => result
-    case None         =>
-      runAfterConfirmation(options, prepared, installer, stateStore, progressObserver)
+    case None => runAfterConfirmation(options, prepared, installer, stateStore, progressObserver)
 
   private def confirmationPreflight(
       options: InstallerOptions,
@@ -988,8 +980,7 @@ private object StatefulApplyRunner:
       stateStore: ApplyStateStore,
       progressObserver: BinaryDownloadProgressObserver
   ): InstallerResult = statePath(options, prepared.plan) match
-    case None =>
-      installer.installPlan(
+    case None => installer.installPlan(
         prepared.plan,
         options.applyConfirmation,
         options.verboseOutput,
@@ -1053,7 +1044,7 @@ private object StatefulApplyRunner:
     val skippedLines = prepared.plan.tools
       .filter(tool => completed(tool.name))
       .map(tool => s"skipped ${tool.name}: already completed in state")
-    val pendingPlan = prepared.plan.copy(tools = pendingTools)
+    val pendingPlan  = prepared.plan.copy(tools = pendingTools)
     var currentState = state
     val terminalObserver: TerminalToolResult => Either[String, Unit] = terminal =>
       currentState = updateState(currentState, terminal)
@@ -1311,7 +1302,8 @@ private final class ResolvingBinaryInstallerService(
     else
       resolveSelectedPreparedPlan(options).fold(
         renderError,
-        prepared => StatefulApplyRunner.run(options, prepared, installer, stateStore, progressObserver)
+        prepared =>
+          StatefulApplyRunner.run(options, prepared, installer, stateStore, progressObserver)
       )
 
   def versions(options: InstallerOptions): InstallerResult =
@@ -1662,8 +1654,8 @@ private final class ResolutionBuilder(
     val specPath    = s"spec.plan[$index].spec"
     val installDir  = interpolate(spec.installDir, s"$specPath.installDir", vars)
     val filename    = interpolate(spec.download.filename, s"$specPath.download.filename", vars)
-    val localVars   = vars + ("installDir" -> installDir.value)
-    val download          = resolveDownload(spec.download, specPath, localVars, version)
+    val localVars   = vars + ("installDir"              -> installDir.value)
+    val download    = resolveDownload(spec.download, specPath, localVars, version)
     val createDirectories = resolveStringVector(
       spec.createDirectories,
       s"$specPath.createDirectories",
@@ -1908,17 +1900,16 @@ private final class JdkBinaryDownloadClient(client: HttpClient) extends BinaryDo
   override def download(
       url: String,
       progressObserver: BinaryDownloadProgressObserver
-  ): Either[BinaryDownloadError, Array[Byte]] =
-    RuntimeUrl.httpsUri(url) match
-      case Left(message) => Left(BinaryDownloadError(url, message))
-      case Right(uri)    =>
-        val request = HttpRequest.newBuilder(uri).timeout(RuntimeHttpClient.requestTimeout).GET()
-          .build()
-        Try(client.send(request, HttpResponse.BodyHandlers.ofInputStream())) match
-          case Success(response) if response.statusCode() >= 200 && response.statusCode() < 300 =>
-            readBody(url, response, progressObserver)
-          case Success(response) => Left(BinaryDownloadError(url, s"HTTP ${response.statusCode()}"))
-          case Failure(error)    => Left(BinaryDownloadError(url, error.getMessage))
+  ): Either[BinaryDownloadError, Array[Byte]] = RuntimeUrl.httpsUri(url) match
+    case Left(message) => Left(BinaryDownloadError(url, message))
+    case Right(uri)    =>
+      val request = HttpRequest.newBuilder(uri).timeout(RuntimeHttpClient.requestTimeout).GET()
+        .build()
+      Try(client.send(request, HttpResponse.BodyHandlers.ofInputStream())) match
+        case Success(response) if response.statusCode() >= 200 && response.statusCode() < 300 =>
+          readBody(url, response, progressObserver)
+        case Success(response) => Left(BinaryDownloadError(url, s"HTTP ${response.statusCode()}"))
+        case Failure(error)    => Left(BinaryDownloadError(url, error.getMessage))
 
   private def readBody(
       url: String,
@@ -1977,12 +1968,13 @@ private final class ProcessCommandExecutor(timeout: Duration) extends CommandExe
         val exit   = process.exitValue()
         val output = CommandOutput(stdout.join(), stderr.join())
         if exit == 0 then Right(())
-        else Left(
-          CommandExecutionError(spec, s"command exited with status $exit", Some(exit), output)
-        )
+        else
+          Left(
+            CommandExecutionError(spec, s"command exited with status $exit", Some(exit), output)
+          )
       else
-        val _ = process.destroyForcibly()
-        val _ = process.waitFor(5, TimeUnit.SECONDS)
+        val _      = process.destroyForcibly()
+        val _      = process.waitFor(5, TimeUnit.SECONDS)
         val output = CommandOutput(stdout.join(), stderr.join())
         Left(
           CommandExecutionError(
@@ -1996,26 +1988,25 @@ private final class ProcessCommandExecutor(timeout: Duration) extends CommandExe
     case Success(result) => result
     case Failure(error)  => Left(CommandExecutionError(spec, error.getMessage, None))
 
-  private def readBounded(input: InputStream): String =
-    Using.resource(input): stream =>
-      val output = ByteArrayOutputStream()
-      val buffer = Array.ofDim[Byte](8 * 1024)
-      var read   = stream.read(buffer)
-      var stored = 0
-      var clipped = false
-      while read != -1 do
-        val remaining = capturedOutputLimitBytes - stored
-        if remaining > 0 then
-          val writable = read.min(remaining)
-          output.write(buffer, 0, writable)
-          stored += writable
-          clipped = clipped || writable < read
-        else clipped = true
-        read = stream.read(buffer)
-      val suffix =
-        if clipped then "\n... output truncated after 65536 bytes ..."
-        else ""
-      output.toString(StandardCharsets.UTF_8) + suffix
+  private def readBounded(input: InputStream): String = Using.resource(input): stream =>
+    val output  = ByteArrayOutputStream()
+    val buffer  = Array.ofDim[Byte](8 * 1024)
+    var read    = stream.read(buffer)
+    var stored  = 0
+    var clipped = false
+    while read != -1 do
+      val remaining = capturedOutputLimitBytes - stored
+      if remaining > 0 then
+        val writable = read.min(remaining)
+        output.write(buffer, 0, writable)
+        stored += writable
+        clipped = clipped || writable < read
+      else clipped = true
+      read = stream.read(buffer)
+    val suffix =
+      if clipped then "\n... output truncated after 65536 bytes ..."
+      else ""
+    output.toString(StandardCharsets.UTF_8) + suffix
 
 private enum ArchiveEntryKind:
   case File, Directory
