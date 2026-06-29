@@ -289,6 +289,16 @@ kind: BinaryDistributionProfile
   refreshes the terminal viewport before each frame. Planning and execution
   renderers now clip headers, state/config paths, status lines, keybars,
   scrollbars, and narrow terminal frames to the current viewport width.
+- 2026-06-29: VALIDATION-6 checkpoint passed for the completed follow-up
+  hardening chunk covering redirect provenance, direct `stty` process
+  boundaries, and TUI resize handling. Config, core, CLI, and TUI focused
+  tests passed, along with recursive compile/test, scalafmt, Mill module
+  resolution, task JSON validation, app-level `--help`, `plan`, `apply
+  --dry-run`, `versions`, static non-interactive `plan --tui` and `apply
+  --dry-run --tui` smokes against `config.example.yaml`, and git whitespace
+  checks. No source fixes were required. Native-image remains locally blocked
+  because `native-image` is not on `PATH`; live raw-terminal resize/TUI smoke
+  still requires a real interactive terminal.
 
 ## Current Agent Loop State
 
