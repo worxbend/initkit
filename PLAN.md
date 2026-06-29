@@ -415,6 +415,15 @@ kind: BinaryDistributionProfile
   discovery success, missing checksum file diagnostics, mismatched discovered
   checksums before replacement, and redacted checksum-source diagnostics.
   Config/core/CLI/TUI tests, recursive compile, and scalafmt check passed.
+- 2026-06-30: T016 final validation passed for the follow-up queue. Config,
+  core, CLI, and TUI focused tests, recursive compile/test, scalafmt, Mill
+  module resolution, task JSON validation, app-level `--help`, `plan`,
+  `apply --dry-run`, `versions`, static non-interactive `plan --tui` and
+  `apply --dry-run --tui` smokes against `config.example.yaml`, and git
+  whitespace checks all passed with no source fixes required. Native image
+  validation remains locally blocked because `native-image` is not on `PATH`
+  under OpenJDK 25.0.3, and live raw-terminal TUI smoke remains manual because
+  this agent shell is not an interactive TTY.
 
 ## Current Agent Loop State
 
@@ -457,8 +466,7 @@ is:
 ## Agent Loop Tasks
 
 The resumable implementation queue is stored in `.agent-loop/tasks.json`.
-The next loop continues after the completed TUI/readiness milestone and
-  prioritizes remaining production hardening and lock/policy follow-up work:
+The follow-up production hardening and lock/policy queue is complete:
 
 | Task | Type | Complexity | Title |
 | --- | --- | --- | --- |
@@ -479,9 +487,9 @@ The next loop continues after the completed TUI/readiness milestone and
 | T015 | improvement | complex | Discover published checksums |
 | T016 | validation | simple | Run final validation |
 
-All tasks start as `pending`. Validation checkpoints are inserted after the
-network/terminal/path hardening cluster, after the core maintainability split,
-after lock/policy work, and at final completion.
+All tasks in this queue are now marked `completed`. Validation checkpoints ran
+after the network/terminal/path hardening cluster, after the core
+maintainability split, after lock/policy work, and at final completion.
 
 ## Next Phase Development Plan
 
