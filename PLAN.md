@@ -140,6 +140,12 @@ kind: BinaryDistributionProfile
   redact installer env values in plan output, and quote argv in installer
   command errors. Remaining must-fix risks for native `tar.xz` inspection and
   installer-script atomicity are explicitly deferred with rationale.
+- 2026-06-29: T018 final validation passed. Config, core, CLI, recursive
+  compile, recursive tests, scalafmt, git whitespace, and app-level `plan`,
+  `apply --dry-run`, and `versions` smokes against `config.example.yaml` all
+  completed successfully. Native image build was skipped because `native-image`
+  was not available on `PATH`; the active JVM was OpenJDK rather than GraalVM.
+  No pending must-fix hardening findings remain without documented deferral.
 
 ### User Experience Goals
 
