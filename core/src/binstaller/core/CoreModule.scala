@@ -132,7 +132,7 @@ trait HttpTextClient:
   def getText(url: String): Either[HttpTextError, String]
 
 object HttpTextClient:
-  def jdk: HttpTextClient = JdkHttpTextClient(HttpClient.newHttpClient())
+  def jdk: HttpTextClient = JdkHttpTextClient(RuntimeHttpClient.create())
 
 final case class BinaryDownloadError(url: String, message: String)
 
@@ -140,7 +140,13 @@ trait BinaryDownloadClient:
   def download(url: String): Either[BinaryDownloadError, Array[Byte]]
 
 object BinaryDownloadClient:
-  def jdk: BinaryDownloadClient = JdkBinaryDownloadClient(HttpClient.newHttpClient())
+  def jdk: BinaryDownloadClient = JdkBinaryDownloadClient(RuntimeHttpClient.create())
+
+private object RuntimeHttpClient:
+
+  def create(): HttpClient = HttpClient.newBuilder()
+    .followRedirects(HttpClient.Redirect.NORMAL)
+    .build()
 
 final case class CommandSpec(argv: Vector[String], cwd: Path, env: Map[String, String])
 

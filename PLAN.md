@@ -119,6 +119,14 @@ kind: BinaryDistributionProfile
   smokes against `config.example.yaml` all completed successfully with no source
   fixes required. Remaining risk is in later release/documentation wiring,
   hardening review findings, and the known installer-script atomicity limitation.
+- 2026-06-29: T015 validation checkpoint passed after one runtime apply fix.
+  The focused yazi non-dry-run smoke initially exposed that GitHub release
+  downloads return redirects; the default JDK HTTP clients now follow normal
+  redirects. Config, core, CLI, recursive compile, recursive tests, plan,
+  apply `--dry-run`, yazi apply in an isolated temporary apps directory,
+  scalafmt, and git whitespace checks all completed successfully afterward.
+  Remaining risk is in release/documentation wiring, checksum coverage for
+  unpinned upstream assets, and the known installer-script atomicity limitation.
 
 ### User Experience Goals
 
