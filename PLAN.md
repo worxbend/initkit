@@ -65,6 +65,13 @@ as part of this refactor.
   existing focus cycling, row movement, scrolling, filtering, help modal, and
   quit/cleanup paths on the unified state model. Deterministic TUI tests and
   the non-interactive `tui --config config.example.yaml` smoke passed.
+- 2026-06-30: Validation iteration 28 passed the T005 checkpoint after
+  T001-T004: focused tests, recursive compile/test, scalafmt, Mill resolution,
+  first-class `tui` help/config smokes, non-interactive app smokes, and
+  `git diff --check`. The static `tui --config config.example.yaml` smoke
+  rendered a frame and clear non-interactive message. Local blockers remain
+  environment-bound: `native-image` is not on `PATH`, and stdin is not a live
+  TTY in this agent shell.
 
 ## Product Target
 
