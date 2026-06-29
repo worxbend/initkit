@@ -282,6 +282,13 @@ kind: BinaryDistributionProfile
   state when normal close, quit, service failure, or `/dev/tty` input-open
   failure occurs. Focused TUI tests cover argv boundaries, tty targeting,
   idempotent close, and open-failure cleanup.
+- 2026-06-29: T003 of the follow-up hardening queue added live TUI resize
+  support. Raw terminal mode now uses timed nonblocking reads so periodic size
+  checks can emit `TuiInput.Resize` after startup; planning sessions consume
+  those events through the existing state machine, and execution rendering
+  refreshes the terminal viewport before each frame. Planning and execution
+  renderers now clip headers, state/config paths, status lines, keybars,
+  scrollbars, and narrow terminal frames to the current viewport width.
 
 ## Current Agent Loop State
 
@@ -302,7 +309,8 @@ is:
   symlink operations, the current `tar.xz` fallback, and test/fake executors.
 - The TUI terminal backend no longer constructs shell command strings for
   `stty`; terminal sizing and raw-mode save/restore use direct process argv
-  with `/dev/tty` as redirected input.
+  with `/dev/tty` as redirected input, and live interactive sessions can emit
+  `TuiInput.Resize` from periodic terminal-size checks.
 - The planning TUI now renders deterministically behind explicit `plan --tui`
   and `apply --tui` entrypoints and includes keyboard navigation, filtering,
   focusable scrollable details/logs, help, resize-aware layout sizing, and

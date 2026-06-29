@@ -677,6 +677,11 @@ final case class ExecutionTuiState(
       logs = (logs ++ failureLogs).takeRight(80)
     )
 
+  /** Handle terminal-local inputs relevant to execution rendering. */
+  def handle(input: TuiInput): ExecutionTuiState = input match
+    case TuiInput.Resize(value) => copy(viewport = value)
+    case _                      => this
+
   private def currentActive(
       toolName: String,
       phase: InstallerPhase,
@@ -738,7 +743,9 @@ private final class RenderingExecutionTuiObserver(
     currentState = currentState.onEvent(event)
     renderCurrent()
 
-  def renderCurrent(): Unit = terminal.render(ExecutionTuiRenderer.render(currentState.toModel))
+  def renderCurrent(): Unit =
+    currentState = currentState.handle(TuiInput.Resize(terminal.viewport))
+    terminal.render(ExecutionTuiRenderer.render(currentState.toModel))
 
   def finish(result: InstallerResult): Unit =
     currentState = currentState.withResult(result)
@@ -749,7 +756,7 @@ object ExecutionTuiRenderer:
 
   /** Render an execution model into terminal rows. */
   def render(model: ExecutionTuiModel): Vector[String] =
-    val width  = model.viewport.width.max(48)
+    val width  = model.viewport.width.max(1)
     val layout = ExecutionTuiLayout.forViewport(model.viewport)
     header(model, width) ++
       active(model.active, model.spinnerFrame, width) ++
@@ -780,8 +787,8 @@ object ExecutionTuiRenderer:
           width
         )
       ),
-      s"config ${header.configPath}",
-      s"state ${header.stateFilePath.getOrElse("not configured")}",
+      fit(s"config ${header.configPath}", width),
+      fit(s"state ${header.stateFilePath.getOrElse("not configured")}", width),
       fit(s"host ${header.hostSummary}", width),
       separator(width)
     )
@@ -1193,13 +1200,17 @@ private[tui] final class SystemTuiTerminal(
 ) extends TuiTerminal:
   private var input: InputStream              = InputStream.nullInputStream()
   private var previousTerminalState: String   = ""
+  private var observedViewport: TuiViewport   = TuiViewport.default
   private var terminalOpened: Boolean         = false
   private var rawTerminalStateActive: Boolean = false
   private var inputOpened: Boolean            = false
 
   def isInteractive: Boolean = System.console() != null
 
-  def viewport: TuiViewport = backend.readSize().getOrElse(TuiViewport.default)
+  def viewport: TuiViewport =
+    val current = backend.readSize().getOrElse(observedViewport)
+    observedViewport = current
+    current
 
   def open(): Unit = if !terminalOpened && !rawTerminalStateActive then
     previousTerminalState = backend.readTerminalState().getOrElse("")
@@ -1226,9 +1237,10 @@ private[tui] final class SystemTuiTerminal(
     out.print(lines.mkString("\r\n"))
     out.flush()
 
-  def readInput(): Option[TuiInput] =
+  def readInput(): Option[TuiInput] = readResizeInput().orElse:
     val first = input.read()
-    if first < 0 then None else Some(TuiInputParser.parse(first, input))
+    if first < 0 then readResizeInput().orElse(Some(TuiInput.Unknown))
+    else Some(TuiInputParser.parse(first, input))
 
   def close(): Unit =
     if terminalOpened then
@@ -1249,6 +1261,15 @@ private[tui] final class SystemTuiTerminal(
       val _ = backend.restoreTerminalState(previousTerminalState)
     rawTerminalStateActive = false
     previousTerminalState = ""
+
+  private def readResizeInput(): Option[TuiInput] = backend.readSize() match
+    case Some(current) if current != observedViewport =>
+      observedViewport = current
+      Some(TuiInput.Resize(current))
+    case Some(current) =>
+      observedViewport = current
+      None
+    case None => None
 
 private[tui] trait TuiTerminalBackend:
   def readSize(): Option[TuiViewport]
@@ -1303,7 +1324,7 @@ private[tui] final class SystemTuiTerminalBackend(
 
   def readTerminalState(): Option[String] = runStty(Vector("-g")).map(_.trim).filter(_.nonEmpty)
 
-  def enterRawMode(): Boolean = runStty(Vector("raw", "-echo")).isDefined
+  def enterRawMode(): Boolean = runStty(Vector("raw", "-echo", "min", "0", "time", "1")).isDefined
 
   def restoreTerminalState(state: String): Boolean = runStty(Vector(state)).isDefined
 
@@ -1392,7 +1413,7 @@ object PlanningTuiRenderer:
 
   /** Render a planning model into terminal rows. */
   def render(model: PlanningTuiModel): Vector[String] =
-    val width  = model.viewport.width.max(48)
+    val width  = model.viewport.width.max(1)
     val layout = PlanningTuiLayout.forViewport(model.viewport)
     header(model, width) ++
       table(model.rows, layout, width, model.focusedPane == TuiPane.Plan) ++
@@ -1418,8 +1439,8 @@ object PlanningTuiRenderer:
           width
         )
       ),
-      s"config ${header.configPath}",
-      s"state ${header.stateFilePath.getOrElse("not configured")}",
+      fit(s"config ${header.configPath}", width),
+      fit(s"state ${header.stateFilePath.getOrElse("not configured")}", width),
       fit(
         s"host ${header.hostSummary} | selection ${header.selectionText} | filter ${header.filterText}",
         width
@@ -1504,11 +1525,11 @@ object PlanningTuiRenderer:
 
   private def footer(model: PlanningTuiModel, width: Int): Vector[String] =
     val legend = PlanningTuiStatus.legendOrder
-      .map(status => PlanningTuiStatus.style(status, status.label))
+      .map(_.label)
       .mkString(" ")
     Vector(
       fit(model.footer, width),
-      s"status $legend",
+      fit(s"status $legend", width),
       PlanningTuiStatus.style(PlanningTuiStatus.Active, fit(model.keybar, width))
     )
 
@@ -1542,7 +1563,9 @@ object PlanningTuiRenderer:
     val padded        = visible ++ Vector.fill((height - visible.size).max(0))("")
     val markers       = scrollbarMarkers(lines.size, clippedOffset, height)
     padded.zip(markers).map:
-      case (line, marker) => fit(line, width - 2) + " " + marker
+      case (line, marker) =>
+        if width <= 2 then fit(line, width)
+        else fit(line, width - 2) + " " + marker
 
   private def scrollbarMarkers(total: Int, offset: Int, height: Int): Vector[String] =
     if total <= height then Vector.fill(height)(" ")

@@ -111,6 +111,26 @@ object TuiModuleTest extends TestSuite:
       assert(!plain.contains("q/Ctrl+C quit"))
       assert(!plain.contains("Plan ["))
 
+    test("execution state accepts resize inputs and renders within narrow bounds"):
+      val fixture = writeFixture(longValues = true)
+      val state   = ExecutionTuiState
+        .initial(
+          TuiRequest(TuiMode.Apply, fixture.options),
+          ExecutionTuiSettings.fromPlanning(testSettings(width = 100, height = 42))
+        )
+        .onEvent(InstallerEvent.ToolStarted("alpha", InstallerPhase.Downloading, elapsed(20)))
+        .onEvent(InstallerEvent.LogLine(
+          Some("alpha"),
+          "extracting selected archive paths from a very long archive member name",
+          elapsed(350)
+        ))
+        .handle(TuiInput.Resize(TuiViewport(32, 24)))
+
+      val rendered = ExecutionTuiRenderer.render(state.toModel)
+
+      assert(state.viewport == TuiViewport(32, 24))
+      assertRenderedWithin(rendered, width = 32)
+
     test("execution rows show completed and failed tools with root cause styling"):
       val fixture = writeFixture()
       val state   = ExecutionTuiState
@@ -420,6 +440,38 @@ object TuiModuleTest extends TestSuite:
       assert(quitState.exitRequested)
       assert(ctrlCState.exitRequested)
 
+    test("planning session accepts resize inputs and renders within narrow bounds"):
+      val state = sessionState(
+        writeFixture(longValues = true),
+        settings = testSettings(width = 100, height = 42)
+      )
+      val finalState = PlanningTuiSession.run(
+        state,
+        Vector(TuiInput.Resize(TuiViewport(32, 24)))
+      )
+      val rendered = PlanningTuiRenderer.render(finalState.toModel)
+
+      assert(finalState.viewport == TuiViewport(32, 24))
+      assertRenderedWithin(rendered, width = 32)
+
+    test("interactive planning rerenders after resize input"):
+      val fixture  = writeFixture(longValues = true)
+      val terminal = FakeTuiTerminal(
+        interactive = true,
+        TuiViewport(100, 38),
+        inputs = Vector(TuiInput.Resize(TuiViewport(30, 22)), TuiInput.Quit)
+      )
+      val result = TuiModule.startInteractive(
+        TuiRequest(TuiMode.Plan, fixture.options),
+        FakeHttpTextClient(""),
+        testSettings(height = 38),
+        terminal
+      )
+
+      assert(result.exitCode == 0)
+      assert(terminal.rendered.size == 2)
+      assertRenderedWithin(terminal.rendered.last, width = 30)
+
     test("stty backend uses direct argv and redirects input to tty"):
       val tty     = File("/dev/tty")
       val runner  = RecordingProcessRunner(Vector(Some("saved-state\n"), Some(""), Some("")))
@@ -434,10 +486,25 @@ object TuiModuleTest extends TestSuite:
       assert(restored)
       assert(runner.specs.map(_.argv) == Vector(
         Vector("stty", "-g"),
-        Vector("stty", "raw", "-echo"),
+        Vector("stty", "raw", "-echo", "min", "0", "time", "1"),
         Vector("stty", "saved; touch /tmp/owned")
       ))
       assert(runner.specs.forall(_.inputFile == tty))
+
+    test("system terminal emits resize input when size changes"):
+      val backend = RecordingTerminalBackend(
+        state = Some("saved-state"),
+        rawModeResult = true,
+        sizes = Vector(TuiViewport(100, 38), TuiViewport(32, 20))
+      )
+      val terminal = SystemTuiTerminal(backend, silentOutput())
+
+      assert(terminal.viewport == TuiViewport(100, 38))
+      terminal.open()
+      val input = terminal.readInput()
+      terminal.close()
+
+      assert(input.contains(TuiInput.Resize(TuiViewport(32, 20))))
 
     test("system terminal restores raw mode and closes tty input after normal close"):
       val backend = RecordingTerminalBackend(
@@ -665,6 +732,9 @@ object TuiModuleTest extends TestSuite:
 
   private def stripAnsi(output: String): String = output.replaceAll("\u001b\\[[;\\d]*m", "")
 
+  private def assertRenderedWithin(lines: Vector[String], width: Int): Unit =
+    assert(lines.forall(line => stripAnsi(line).length <= width))
+
   private def silentOutput(): PrintWriter = PrintWriter(ByteArrayOutputStream(), true)
 
 private final case class TuiFixture(
@@ -684,15 +754,18 @@ private final class FakeHttpTextClient(text: String) extends HttpTextClient:
 private final class FakeTuiTerminal(
     interactive: Boolean,
     initialViewport: TuiViewport,
+    inputs: Vector[TuiInput] = Vector.empty,
     openFailure: Option[Throwable] = None
 ) extends TuiTerminal:
   var opened: Boolean                  = false
   var closed: Boolean                  = false
   var rendered: Vector[Vector[String]] = Vector.empty
+  private var inputIndex: Int          = 0
+  private var currentViewport          = initialViewport
 
   def isInteractive: Boolean = interactive
 
-  def viewport: TuiViewport = initialViewport
+  def viewport: TuiViewport = currentViewport
 
   def open(): Unit =
     opened = true
@@ -700,7 +773,13 @@ private final class FakeTuiTerminal(
 
   def render(lines: Vector[String]): Unit = rendered = rendered :+ lines
 
-  def readInput(): Option[TuiInput] = None
+  def readInput(): Option[TuiInput] =
+    val input = inputs.lift(inputIndex)
+    inputIndex = inputIndex + 1
+    input.foreach:
+      case TuiInput.Resize(value) => currentViewport = value
+      case _                      => ()
+    input
 
   def close(): Unit = closed = true
 
@@ -717,11 +796,16 @@ private final class RecordingTerminalBackend(
     state: Option[String],
     rawModeResult: Boolean,
     val openedInput: RecordingInputStream = RecordingInputStream(),
-    inputFailure: Option[Throwable] = None
+    inputFailure: Option[Throwable] = None,
+    sizes: Vector[TuiViewport] = Vector(TuiViewport(100, 38))
 ) extends TuiTerminalBackend:
   var actions: Vector[String] = Vector.empty
+  private var sizeReads: Int  = 0
 
-  def readSize(): Option[TuiViewport] = Some(TuiViewport(100, 38))
+  def readSize(): Option[TuiViewport] =
+    val index = sizeReads.min((sizes.size - 1).max(0))
+    sizeReads = sizeReads + 1
+    sizes.lift(index)
 
   def readTerminalState(): Option[String] =
     actions = actions :+ "read-state"
