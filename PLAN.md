@@ -54,6 +54,12 @@ kind: BinaryDistributionProfile
   completed successfully with no fixes required. Remaining risk is in the
   planned T005+ implementation work: CLI plan/apply output still uses
   placeholder core services until version resolution and planning are added.
+- 2026-06-29: T005 completed core variable and version resolution. Runtime,
+  manifest, policy, and tool-local `${...}` variables resolve into a
+  `ResolvedPlan`; pinned and `http-text` versions produce concrete values;
+  `dynamic.latest-url` remains explicitly dynamic; and resolution failures
+  aggregate `ValidationError`s with YAML-like paths. CLI plan/apply rendering
+  is still intentionally deferred to T006.
 
 ### User Experience Goals
 
@@ -67,6 +73,48 @@ kind: BinaryDistributionProfile
   dry-run output.
 - The converted `config.example.yaml` is the executable replacement for
   `binary-dist.sh`.
+
+### Security And Customization Principles
+
+Hardening is a product requirement, not only a late cleanup pass. The app should
+remain flexible enough to model real upstream binary distribution quirks, but
+each flexible escape hatch must be explicit, typed, previewable, and testable.
+
+Security defaults:
+
+- Treat manifests as untrusted input, even when they come from a user's own
+  dotfiles repository.
+- Preserve argv boundaries for commands. Do not concatenate manifest values into
+  shell strings except in narrowly modeled installer-script execution.
+- Never evaluate manifest variables as shell syntax. Values such as `$()`,
+  backticks, glob characters, semicolons, pipes, and redirects are plain text
+  unless a field is explicitly documented as shell-owned.
+- Require explicit opt-in for risky behavior: dynamic URLs, installer scripts,
+  sudo symlinks, overwrite/clean-install behavior, and environment passthrough.
+- Prefer least privilege. Normal installs are user-local; sudo is allowed only
+  for declared system symlink operations or another future typed capability with
+  equivalent review.
+- Verify before replace: downloads, archive contents, executable presence, and
+  checksums where configured must be validated before replacing an existing
+  installation.
+- Render the same concrete operations in dry-run that apply mode will execute,
+  including URL, destination, checksum status, archive extraction mapping,
+  symlinks, sudo usage, and installer-script env/args.
+- Redact secrets and sensitive environment values in logs, state, errors,
+  debug output, and dry-run previews.
+
+Customization rules:
+
+- Prefer typed fields over free-form commands for common operations.
+- Keep installer scripts available for upstreams that only ship scripts, but run
+  them through a constrained boundary: downloaded temp file, explicit shell,
+  explicit args, explicit env allowlist, bounded timeout, cleanup, and
+  post-install verification.
+- Do not add a generic shell-command plan kind to the smaller app. If a user
+  needs one later, it should be a deliberately gated extension with clear risk
+  labeling, confirmations, redaction, and tests.
+- Allow project-specific policy knobs, but make the unsafe value noisy in plan
+  output and require apply confirmation where appropriate.
 
 ## Scope
 
@@ -86,7 +134,9 @@ kind: BinaryDistributionProfile
 - Install-script based binary tools when the upstream project only ships an
   installer script, as with Helm and Kustomize.
 - Symlink creation, including optional sudo symlinks for Neovim compatibility.
-- Optional checksum fields for future hardening.
+- Checksum fields and checksum enforcement where configured. Missing checksums
+  are allowed only when the plan clearly marks the source as unverified or a
+  later policy explicitly requires checksums for all non-dynamic downloads.
 - State/resume support at the plan-entry level.
 - Native Linux amd64 release through the existing Mill/GraalVM flow.
 
@@ -189,6 +239,9 @@ plan or a dedicated change note.
 - Model expected failures as typed errors instead of throwing through the CLI.
 - Keep public contracts documented where behavior is security-sensitive,
   stateful, or externally observable.
+- Add Scala docs or short comments for security-sensitive public contracts:
+  command execution, archive extraction, checksum verification, path
+  normalization, sudo symlinks, state writes, and redaction.
 - Add focused tests alongside each implementation phase.
 
 ### Native Image
@@ -469,6 +522,22 @@ final case class InstallerScriptSpec(
 - Modes must be four-digit octal strings such as `"0755"`.
 - Installer scripts must declare `shell`; allowed first version values are
   `sh`, `bash`, and `zsh`.
+- URLs must use `https` by default. Any future `http` or local-file source
+  support must require an explicit unsafe policy flag and loud dry-run warning.
+- Download filenames, install directories, extracted paths, executable paths,
+  and local symlink paths must reject absolute paths, `..` traversal, empty path
+  segments, control characters, and NUL bytes unless the field is explicitly
+  modeled as an absolute system path.
+- Variable interpolation must not change a field's safety class. A path that is
+  required to be relative must remain relative after interpolation.
+- Checksum values must be valid hex for the selected algorithm. Placeholder
+  values such as `replace-with-real-*` are invalid in executable examples.
+- Environment entries marked sensitive must not be printed verbatim. Environment
+  variable names must be valid names and should reject shell metacharacters.
+- Installer-script args are argv tokens, not shell snippets. They must remain
+  separate values through planning, dry-run, and execution.
+- Dynamic latest URLs must be marked dynamic in output and should be rejected by
+  a future strict/reproducible policy unless locked.
 
 ## Example Tool Entries
 
@@ -835,6 +904,10 @@ behavior while preserving the user-visible clean-install result.
   already supports it.
 - `tar.xz` can use the system `tar` command boundary for the first milestone.
 - Extraction must reject paths that escape the staging directory.
+- Extraction must reject absolute archive member paths, drive-prefixed paths,
+  `..` traversal, NUL/control characters, unsafe symlink/hardlink entries, and
+  archive members that would overwrite the same target ambiguously.
+- Zip-slip and tar path traversal regressions must be covered by tests.
 - Directory extraction should support moving an extracted root directory into
   the install root.
 - File extraction should support mapping archive members to final relative
@@ -849,6 +922,10 @@ behavior while preserving the user-visible clean-install result.
 - Sudo symlinks use structured argv:
   `sudo ln -sfn <target> <path>`.
 - Dry-run prints every symlink command.
+- Symlink creation must reject targets outside allowed roots unless the symlink
+  is explicitly marked as a system symlink and the policy allows it.
+- Sudo symlink commands must not run through shell text. Use argv and redacted
+  command rendering.
 
 ### Installer Script Behavior
 
@@ -861,6 +938,9 @@ Allowed first-milestone behavior:
 - Set mode `0700`.
 - Run configured shell with explicit args.
 - Pass explicit env vars.
+- Pass only a small baseline environment plus declared env vars. Do not inherit
+  the full parent process environment by default.
+- Apply configured timeout and cancellation.
 - Verify expected executable paths afterward.
 - Delete script when `cleanup: true`.
 
@@ -870,6 +950,7 @@ Disallowed behavior:
 - Unbounded environment passthrough.
 - Silent sudo usage from the app. If the upstream script runs sudo despite env
   config, the failed command should be reported.
+- Implicit shell interpolation of manifest values into a command string.
 
 ## State And Resume
 
