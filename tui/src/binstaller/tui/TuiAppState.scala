@@ -9,6 +9,7 @@ import binstaller.core.InstallerEventObserver
 import binstaller.core.InstallerOptions
 import binstaller.core.ResolvedPlanSnapshot
 import binstaller.core.ResolvedTool
+import binstaller.core.RenderSafety
 import binstaller.core.ToolSelection
 
 /** High-level browsing mode owned by the interactive TUI application state. */
@@ -22,6 +23,8 @@ enum TuiBrowsingMode(val label: String):
 enum TuiModal:
   case Help
   case Message(title: String, lines: Vector[String])
+  case Error(failure: TuiFailure)
+  case RootCause(failure: TuiFailure)
   case ConfirmApply(selectedToolNames: Vector[String])
 
 /** One TUI-local plan entry, preserving the resolved core tool without using CLI selection. */
@@ -123,10 +126,22 @@ object TuiAppActions:
           val selectedText   =
             s"plan preview selected ${selectedEntries.size} / ${state.totalCount}: " +
               selectedEntries.map(_.name).mkString(", ")
-          val nextLogs  = (state.logs ++ (Vector(selectedText) ++ result.lines)).takeRight(120)
-          val nextModal =
-            if result.exitCode == 0 then state.modal
-            else Some(TuiModal.Message("Plan preview failed", result.lines.take(8)))
+          val failure = failureForResult(
+            "Plan preview failed",
+            TuiFailureCategory.Resolution,
+            "plan preview",
+            result,
+            selectedEntries,
+            state
+          )
+          val nextLogs = appendActionLogs(
+            state.logs,
+            selectedText,
+            result.lines,
+            failure,
+            state.snapshot.plan.redactions
+          )
+          val nextModal = failure.map(TuiModal.Error.apply).orElse(state.modal)
           state.copy(
             mode = TuiBrowsingMode.PlanPreview,
             logs = nextLogs,
@@ -146,17 +161,30 @@ object TuiAppActions:
             appVersion = state.header.appVersion,
             hostSummary = state.header.hostSummary,
             spinnerFrame = 0,
-            logs = state.logs
+            logs = state.logs,
+            redactions = state.snapshot.plan.redactions
           )
           val observer       = CollectingTuiAppExecutionObserver(request, settings)
           val result         = service.applyWithEvents(dryRunOptions, observer)
           val executionState = observer.state.withResult(result)
           val selectedText   = s"dry-run selected ${selectedEntries.size} / ${state.totalCount}: " +
             selectedEntries.map(_.name).mkString(", ")
-          val nextLogs  = (state.logs :+ selectedText).takeRight(120)
-          val nextModal =
-            if result.exitCode == 0 then state.modal
-            else Some(TuiModal.Message("Dry run failed", result.lines.take(8)))
+          val failure = failureForResult(
+            "Dry run failed",
+            TuiFailureCategory.DryRun,
+            "dry-run",
+            result,
+            selectedEntries,
+            state
+          )
+          val nextLogs = appendActionLogs(
+            state.logs,
+            selectedText,
+            result.lines,
+            failure,
+            state.snapshot.plan.redactions
+          )
+          val nextModal = failure.map(TuiModal.Error.apply).orElse(state.modal)
           state.copy(
             mode = TuiBrowsingMode.DryRun,
             logs = nextLogs,
@@ -190,17 +218,30 @@ object TuiAppActions:
             appVersion = state.header.appVersion,
             hostSummary = state.header.hostSummary,
             spinnerFrame = 0,
-            logs = state.logs
+            logs = state.logs,
+            redactions = state.snapshot.plan.redactions
           )
           val observer       = CollectingTuiAppExecutionObserver(request, settings)
           val result         = service.applyWithEvents(applyOptions, observer)
           val executionState = observer.state.withResult(result)
           val selectedText   = s"apply selected ${selectedEntries.size} / ${state.totalCount}: " +
             selectedEntries.map(_.name).mkString(", ")
-          val nextLogs  = (state.logs :+ selectedText).takeRight(120)
-          val nextModal =
-            if result.exitCode == 0 then None
-            else Some(TuiModal.Message("Apply failed", result.lines.take(8)))
+          val failure = failureForResult(
+            "Apply failed",
+            TuiFailureCategory.Apply,
+            "apply",
+            result,
+            selectedEntries,
+            state
+          )
+          val nextLogs = appendActionLogs(
+            state.logs,
+            selectedText,
+            result.lines,
+            failure,
+            state.snapshot.plan.redactions
+          )
+          val nextModal = failure.map(TuiModal.Error.apply)
           state.copy(
             mode = TuiBrowsingMode.Apply,
             logs = nextLogs,
@@ -211,6 +252,43 @@ object TuiAppActions:
             )),
             modal = nextModal
           )
+
+  private def failureForResult(
+      title: String,
+      category: TuiFailureCategory,
+      action: String,
+      result: InstallerResult,
+      selectedEntries: Vector[TuiPlanEntry],
+      state: TuiAppState
+  ): Option[TuiFailure] = Option.when(result.exitCode != 0)(
+    TuiFailure.fromResult(
+      title,
+      category,
+      action,
+      result,
+      singleSelectedTool(selectedEntries),
+      state.header.stateFilePath,
+      state.snapshot.plan.redactions
+    )
+  )
+
+  private def singleSelectedTool(selectedEntries: Vector[TuiPlanEntry]): Option[String] =
+    selectedEntries match
+      case Vector(entry) => Some(entry.name)
+      case _             => None
+
+  private def appendActionLogs(
+      logs: Vector[String],
+      selectedText: String,
+      resultLines: Vector[String],
+      failure: Option[TuiFailure],
+      redactions: binstaller.core.SensitiveValueRedactions
+  ): Vector[String] =
+    val safeSelected = RenderSafety.display(selectedText, redactions)
+    val safeResult   =
+      RenderSafety.displayLines(resultLines.flatMap(_.linesIterator.toVector), redactions)
+    val failureLines = failure.toVector.flatMap(value => value.title +: value.renderLines)
+    (logs ++ (safeSelected +: safeResult) ++ failureLines).takeRight(120)
 
 /** Header fields that remain visible while browsing or executing actions in the TUI. */
 final case class TuiAppHeader(
@@ -449,6 +527,10 @@ object TuiAppController:
         viewport = value,
         executionState = state.executionState.map(_.handle(input))
       )
+    case TuiInput.Enter => state.executionState
+        .flatMap(_.firstFailure)
+        .map(failure => state.copy(modal = Some(TuiModal.RootCause(failure))))
+        .getOrElse(state)
     case TuiInput.Escape                => state.copy(modal = None)
     case TuiInput.Quit | TuiInput.CtrlC => state.copy(exitRequested = true)
     case _                              => state
@@ -577,24 +659,31 @@ object TuiAppRunner:
 
   /** Run the app state against a terminal boundary with side-effecting TUI actions. */
   def run(initial: TuiAppState, terminal: TuiTerminal, actions: TuiAppActions): InstallerResult =
-    var state = TuiAppController.handle(initial, TuiInput.Resize(terminal.viewport), actions)
     try
-      terminal.open()
-      while !state.exitRequested do
-        terminal.render(TuiAppRenderer.render(state))
-        terminal.readInput() match
-          case Some(input) => state = TuiAppController.handle(state, input, actions)
-          case None        => state = state.copy(exitRequested = true)
-      InstallerResult(Vector.empty, 0)
-    finally terminal.close()
+      var state = TuiAppController.handle(initial, TuiInput.Resize(terminal.viewport), actions)
+      try
+        terminal.open()
+        while !state.exitRequested do
+          terminal.render(TuiAppRenderer.render(state))
+          terminal.readInput() match
+            case Some(input) => state = TuiAppController.handle(state, input, actions)
+            case None        => state = state.copy(exitRequested = true)
+        InstallerResult(Vector.empty, 0)
+      finally terminal.close()
+    catch
+      case scala.util.control.NonFatal(error) =>
+        val failure = TuiFailure.terminal("tui", error)
+        InstallerResult(TuiFailureScreen.render(failure, initial.viewport), 1)
 
 /** Render the currently primary TUI app view. */
 object TuiAppRenderer:
 
   /** Render execution as the primary view while an action is active or complete. */
   def render(state: TuiAppState): Vector[String] = state.executionState match
-    case Some(execution) => ExecutionTuiRenderer.render(execution.toModel)
-    case None            => PlanningTuiRenderer.render(PlanningTuiModel.fromAppState(state))
+    case Some(execution) => ExecutionTuiRenderer.render(execution.toModel.copy(modal =
+        state.modal.orElse(execution.modal)
+      ))
+    case None => PlanningTuiRenderer.render(PlanningTuiModel.fromAppState(state))
 
 private final class CollectingTuiAppExecutionObserver(
     request: TuiRequest,

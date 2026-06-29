@@ -103,6 +103,14 @@ as part of this refactor.
   rendered a frame and clear non-interactive message. Local blockers remain
   environment-bound: `native-image` is not on `PATH`, and stdin is not a live
   TTY in this agent shell.
+- 2026-06-30: T010 implemented structured TUI failure modals and root-cause
+  details. Invalid config/resolution failures now render a visible startup
+  error screen, failed plan/dry-run/apply results open sanitized error modals
+  and append the same bounded details to logs, failed execution rows can reopen
+  a root-cause modal with `Enter`, and terminal open/render failures return a
+  terminal failure screen while still closing the terminal boundary. Focused
+  core, CLI, TUI, recursive compile, scalafmt, JSON, whitespace, and static
+  `tui --config config.example.yaml` checks passed.
 
 ## Product Target
 

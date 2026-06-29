@@ -21,7 +21,6 @@ import binstaller.core.ResolvedSymlink
 import binstaller.core.ResolvedTool
 import binstaller.core.ResolvedVersion
 import binstaller.core.RenderSafety
-import binstaller.core.ResolvePlanError
 import binstaller.core.SensitiveValueRedactions
 import binstaller.core.ToolResultStatus
 import binstaller.core.UrlProvenance
@@ -80,10 +79,9 @@ object TuiModule:
       httpTextClient: HttpTextClient,
       settings: PlanningTuiSettings
   ): InstallerResult = ResolvedPlanSnapshot.resolve(request.options, httpTextClient) match
-    case Left(error) => InstallerResult(
-        s"binstaller ${request.entrypointName}" +: ResolvePlanError.renderLines(error),
-        1
-      )
+    case Left(error) =>
+      val failure = TuiFailure.fromResolvePlanError(s"binstaller ${request.entrypointName}", error)
+      InstallerResult(TuiFailureScreen.render(failure, settings.viewport), 1)
     case Right(snapshot) =>
       val model = PlanningTuiModel.fromAppState(TuiAppState.initial(snapshot, settings))
       InstallerResult(PlanningTuiRenderer.render(model), 0)
@@ -94,10 +92,9 @@ object TuiModule:
       settings: PlanningTuiSettings,
       terminal: TuiTerminal
   ): InstallerResult = ResolvedPlanSnapshot.resolve(request.options, httpTextClient) match
-    case Left(error) => InstallerResult(
-        s"binstaller ${request.entrypointName}" +: ResolvePlanError.renderLines(error),
-        1
-      )
+    case Left(error) =>
+      val failure = TuiFailure.fromResolvePlanError(s"binstaller ${request.entrypointName}", error)
+      InstallerResult(TuiFailureScreen.render(failure, settings.viewport), 1)
     case Right(snapshot) =>
       val initial = PlanningTuiState.initial(snapshot, settings)
       val actions = TuiAppActions.fromService(
@@ -134,12 +131,17 @@ object TuiModule:
     else
       val observer = RenderingExecutionTuiObserver(request, settings, terminal)
       try
-        terminal.open()
-        observer.renderCurrent()
-        val result = service.applyWithEvents(request.options, observer)
-        observer.finish(result)
-        result.copy(lines = Vector.empty)
-      finally terminal.close()
+        try
+          terminal.open()
+          observer.renderCurrent()
+          val result = service.applyWithEvents(request.options, observer)
+          observer.finish(result)
+          result.copy(lines = Vector.empty)
+        finally terminal.close()
+      catch
+        case NonFatal(error) =>
+          val failure = TuiFailure.terminal(s"binstaller ${request.entrypointName}", error)
+          InstallerResult(TuiFailureScreen.render(failure, settings.viewport), 1)
 
 /** TUI workflow mode selected by the CLI. */
 enum TuiMode:
@@ -492,7 +494,8 @@ final case class ExecutionTuiSettings(
     appVersion: String,
     hostSummary: String,
     spinnerFrame: Int,
-    logs: Vector[String]
+    logs: Vector[String],
+    redactions: SensitiveValueRedactions = SensitiveValueRedactions.empty
 )
 
 /** Execution settings constructors. */
@@ -504,7 +507,8 @@ object ExecutionTuiSettings:
     appVersion = settings.appVersion,
     hostSummary = settings.hostSummary,
     spinnerFrame = 0,
-    logs = settings.logs
+    logs = settings.logs,
+    redactions = SensitiveValueRedactions.empty
   )
 
 /** Header data for the apply execution TUI frame. */
@@ -532,7 +536,8 @@ final case class ExecutionToolRow(
     name: String,
     status: PlanningTuiStatus,
     summary: String,
-    elapsedTime: Duration
+    elapsedTime: Duration,
+    failure: Option[TuiFailure] = None
 )
 
 /** Complete deterministic model consumed by [[ExecutionTuiRenderer]]. */
@@ -545,7 +550,8 @@ final case class ExecutionTuiModel(
     dryRunLines: Vector[String],
     summary: Option[String],
     spinnerFrame: Int,
-    keybar: String
+    keybar: String,
+    modal: Option[TuiModal]
 )
 
 /** Event-accumulating execution state for live and static apply TUI rendering. */
@@ -561,7 +567,9 @@ final case class ExecutionTuiState(
     logs: Vector[String],
     dryRunLines: Vector[String],
     summary: Option[InstallerEvent.Summary],
-    elapsedTime: Duration
+    elapsedTime: Duration,
+    redactions: SensitiveValueRedactions,
+    modal: Option[TuiModal]
 ):
 
   /** Convert accumulated execution state into a deterministic render model. */
@@ -589,8 +597,14 @@ final case class ExecutionTuiState(
       dryRunLines = dryRunLines,
       summary = summaryLine,
       spinnerFrame = spinnerFrame,
-      keybar = "terminal restored after apply completes"
+      keybar = "Enter root cause | terminal restored after apply completes",
+      modal = modal
     )
+
+  /** First failed row detail available for a root-cause modal. */
+  def firstFailure: Option[TuiFailure] = rows.collectFirst:
+    case row if row.status == PlanningTuiStatus.Failed => row.failure
+  .flatten
 
   /** Incorporate one renderer-agnostic core event into execution UI state. */
   def onEvent(event: InstallerEvent): ExecutionTuiState =
@@ -666,10 +680,21 @@ final case class ExecutionTuiState(
           case ToolResultStatus.Completed =>
             installDir.map(path => s"installed to $path").getOrElse("completed")
           case ToolResultStatus.Failed => failureSummary.getOrElse("failed")
+        val failure = failureSummary.map(summary =>
+          TuiFailure.fromResult(
+            "Tool failed",
+            categoryForRequest,
+            actionForRequest,
+            InstallerResult(Vector(s"failed $toolName: $summary"), 1),
+            Some(toolName),
+            installDir,
+            redactions
+          )
+        )
         copy(
           spinnerFrame = nextFrame,
           active = None,
-          rows = rows :+ ExecutionToolRow(toolName, rowStatus, rowSummary, elapsed),
+          rows = rows :+ ExecutionToolRow(toolName, rowStatus, rowSummary, elapsed, failure),
           logs = appendLog(s"$toolName: $rowSummary"),
           elapsedTime = elapsed
         )
@@ -697,9 +722,24 @@ final case class ExecutionTuiState(
     val failureLogs =
       if result.exitCode != 0 && rows.isEmpty then result.lines
       else Vector.empty
+    val failure = Option.when(result.exitCode != 0)(
+      TuiFailure.fromResult(
+        resultFailureTitle,
+        categoryForRequest,
+        actionForRequest,
+        result,
+        None,
+        stateFilePath,
+        redactions
+      )
+    )
     copy(
-      dryRunLines = dryRunResultLines,
-      logs = (logs ++ failureLogs).takeRight(80)
+      rows = enrichFailedRows(result),
+      dryRunLines = RenderSafety.displayLines(dryRunResultLines, redactions),
+      logs =
+        (logs ++ RenderSafety.displayLines(failureLogs, redactions) ++
+          failure.toVector.flatMap(value => value.title +: value.renderLines)).takeRight(80),
+      modal = failure.map(TuiModal.Error.apply)
     )
 
   /** Handle terminal-local inputs relevant to execution rendering. */
@@ -718,6 +758,36 @@ final case class ExecutionTuiState(
   private def appendLog(line: String): Vector[String] = (logs :+ line).takeRight(80)
 
   private def phaseText(phase: InstallerPhase): String = phase.toString
+
+  private def enrichFailedRows(result: InstallerResult): Vector[ExecutionToolRow] =
+    if result.exitCode == 0 then rows
+    else
+      rows.map:
+        case row if row.status == PlanningTuiStatus.Failed =>
+          row.copy(failure =
+            Some(TuiFailure.fromResult(
+              "Tool failed",
+              categoryForRequest,
+              actionForRequest,
+              result,
+              Some(row.name),
+              stateFilePath,
+              redactions
+            ))
+          )
+        case row => row
+
+  private def categoryForRequest: TuiFailureCategory =
+    if request.options.dryRun == binstaller.core.DryRunMode.Enabled then TuiFailureCategory.DryRun
+    else TuiFailureCategory.Apply
+
+  private def actionForRequest: String =
+    if request.options.dryRun == binstaller.core.DryRunMode.Enabled then "dry-run"
+    else "apply"
+
+  private def resultFailureTitle: String =
+    if request.options.dryRun == binstaller.core.DryRunMode.Enabled then "Dry run failed"
+    else "Apply failed"
 
 /** Execution state constructors. */
 object ExecutionTuiState:
@@ -742,7 +812,9 @@ object ExecutionTuiState:
       logs = settings.logs,
       dryRunLines = Vector.empty,
       summary = None,
-      elapsedTime = Duration.ZERO
+      elapsedTime = Duration.ZERO,
+      redactions = settings.redactions,
+      modal = None
     )
 
 private final class CollectingExecutionTuiObserver(
@@ -776,6 +848,84 @@ private final class RenderingExecutionTuiObserver(
     currentState = currentState.withResult(result)
     renderCurrent()
 
+private[tui] object TuiModalRenderer:
+
+  def render(value: Option[TuiModal], width: Int): Vector[String] = value match
+    case None                               => Vector.empty
+    case Some(TuiModal.Help)                => help(width)
+    case Some(TuiModal.ConfirmApply(names)) => Vector(
+        separator(width),
+        PlanningTuiStatus.style(PlanningTuiStatus.Warning, fit("Confirm real apply", width)),
+        fit(
+          s"Apply will install ${names.size} selected entr${
+              if names.size == 1 then "y" else "ies"
+            }: ${names.mkString(", ")}",
+          width
+        ),
+        fit("Press Enter to apply now, or Escape/n to cancel.", width),
+        separator(width)
+      )
+    case Some(TuiModal.Message(title, lines)) => titled(
+        title,
+        lines,
+        PlanningTuiStatus.Active,
+        width
+      )
+    case Some(TuiModal.Error(failure)) => titled(
+        s"Error: ${failure.title}",
+        failure.renderLines,
+        PlanningTuiStatus.Failed,
+        width
+      )
+    case Some(TuiModal.RootCause(failure)) => titled(
+        s"Root cause: ${failure.toolName.getOrElse(failure.title)}",
+        failure.renderLines,
+        PlanningTuiStatus.Failed,
+        width
+      )
+
+  private def titled(
+      title: String,
+      lines: Vector[String],
+      status: PlanningTuiStatus,
+      width: Int
+  ): Vector[String] = Vector(
+    separator(width),
+    PlanningTuiStatus.style(status, fit(title, width))
+  ) ++ lines.map(fit(_, width)) ++ Vector(separator(width))
+
+  private def help(width: Int): Vector[String] = Vector(
+    separator(width),
+    PlanningTuiStatus.style(PlanningTuiStatus.Active, fit("Help", width)),
+    fit("Tab cycles plan, details, and logs; Shift+Tab or b cycles backward.", width),
+    fit(
+      "Plan focus: Up/Down selects rows, PageUp/PageDown jumps, Home/End moves to edges.",
+      width
+    ),
+    fit("Enter focuses selected entry details; l focuses logs.", width),
+    fit("p previews the selected entries without installing or writing state.", width),
+    fit("d runs dry-run apply for selected entries and keeps the final summary visible.", width),
+    fit("r opens a confirmation prompt before applying selected entries.", width),
+    fit("Details/log focus: arrows, PageUp/PageDown, Home/End, and mouse wheel scroll.", width),
+    fit("/ edits the filter, Enter applies it, Escape cancels editing or closes modals.", width),
+    fit("q or Ctrl+C exits after restoring the terminal.", width),
+    separator(width)
+  )
+
+  private def separator(width: Int): String = "-" * width
+
+  private def fit(value: String, width: Int): String = cell(value, width)
+
+  private def cell(value: String, width: Int): String =
+    val clipped = truncate(RenderSafety.terminalLine(value), width)
+    clipped + (" " * (width - clipped.length).max(0))
+
+  private def truncate(value: String, width: Int): String =
+    if width <= 0 then ""
+    else if value.length <= width then value
+    else if width == 1 then "."
+    else s"${value.take(width - 1)}."
+
 /** Deterministic renderer for apply execution TUI frames. */
 object ExecutionTuiRenderer:
 
@@ -788,6 +938,7 @@ object ExecutionTuiRenderer:
       resultRows(model.rows, layout, width) ++
       dryRun(model.dryRunLines, width) ++
       logs(model.logs, layout, width) ++
+      TuiModalRenderer.render(model.modal, width) ++
       footer(model, width)
 
   /** Format elapsed time for compact terminal display. */
@@ -1410,45 +1561,8 @@ object PlanningTuiRenderer:
     scrollBody(lines, offset, layout.logBodyHeight, width) ++
     Vector(separator(width))
 
-  private def modal(value: Option[TuiModal], width: Int): Vector[String] = value match
-    case None                               => Vector.empty
-    case Some(TuiModal.Help)                => help(width)
-    case Some(TuiModal.ConfirmApply(names)) => Vector(
-        separator(width),
-        PlanningTuiStatus.style(PlanningTuiStatus.Warning, fit("Confirm real apply", width)),
-        fit(
-          s"Apply will install ${names.size} selected entr${
-              if names.size == 1 then "y" else "ies"
-            }: ${names.mkString(", ")}",
-          width
-        ),
-        fit("Press Enter to apply now, or Escape/n to cancel.", width),
-        separator(width)
-      )
-    case Some(TuiModal.Message(title, lines)) => Vector(
-        separator(width),
-        PlanningTuiStatus.style(PlanningTuiStatus.Active, fit(title, width))
-      ) ++
-        lines.map(fit(_, width)) ++
-        Vector(separator(width))
-
-  private def help(width: Int): Vector[String] = Vector(
-    separator(width),
-    PlanningTuiStatus.style(PlanningTuiStatus.Active, fit("Help", width)),
-    fit("Tab cycles plan, details, and logs; Shift+Tab or b cycles backward.", width),
-    fit(
-      "Plan focus: Up/Down selects rows, PageUp/PageDown jumps, Home/End moves to edges.",
-      width
-    ),
-    fit("Enter focuses selected entry details; l focuses logs.", width),
-    fit("p previews the selected entries without installing or writing state.", width),
-    fit("d runs dry-run apply for selected entries and keeps the final summary visible.", width),
-    fit("r opens a confirmation prompt before applying selected entries.", width),
-    fit("Details/log focus: arrows, PageUp/PageDown, Home/End, and mouse wheel scroll.", width),
-    fit("/ edits the filter, Enter applies it, Escape cancels editing or closes modals.", width),
-    fit("q or Ctrl+C exits after restoring the terminal.", width),
-    separator(width)
-  )
+  private def modal(value: Option[TuiModal], width: Int): Vector[String] =
+    TuiModalRenderer.render(value, width)
 
   private def footer(model: PlanningTuiModel, width: Int): Vector[String] =
     val legend = PlanningTuiStatus.legendOrder

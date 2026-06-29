@@ -83,6 +83,23 @@ object TuiModuleTest extends TestSuite:
       assert(!plain.contains("#   status     name"))
       assert(!Files.exists(fixture.appsDir))
 
+    test("invalid config renders a visible validation error modal"):
+      val config = writeInvalidConfig()
+
+      val result = TuiModule.start(
+        TuiRequest(TuiMode.Plan, installerOptions(config), Some("tui")),
+        FakeHttpTextClient(""),
+        testSettings()
+      )
+      val plain = stripAnsi(result.lines.mkString("\n"))
+
+      assert(result.exitCode == 1)
+      assert(plain.contains("ERROR: TUI startup failed"))
+      assert(plain.contains("category: validation"))
+      assert(plain.contains("action: binstaller tui"))
+      assert(plain.contains("root cause:"))
+      assert(plain.contains("suggestion: Fix the manifest field"))
+
     test("execution view shows active tool progress bytes elapsed and logs"):
       val fixture = writeFixture()
       val state   = ExecutionTuiState
@@ -218,19 +235,19 @@ object TuiModuleTest extends TestSuite:
         openFailure = Some(IOException("cannot open terminal"))
       )
 
-      var threw = false
-      try
-        TuiModule.startInteractive(
-          TuiRequest(TuiMode.Plan, fixture.options),
-          FakeHttpTextClient(""),
-          testSettings(height = 38),
-          terminal
-        )
-      catch case _: IOException => threw = true
+      val result = TuiModule.startInteractive(
+        TuiRequest(TuiMode.Plan, fixture.options),
+        FakeHttpTextClient(""),
+        testSettings(height = 38),
+        terminal
+      )
+      val plain = stripAnsi(result.lines.mkString("\n"))
 
-      assert(threw)
+      assert(result.exitCode == 1)
       assert(terminal.opened)
       assert(terminal.closed)
+      assert(plain.contains("ERROR: Terminal failure"))
+      assert(plain.contains("category: terminal"))
 
     test("non-interactive execution frame avoids alternate-screen terminal sequences"):
       val fixture  = writeFixture()
@@ -431,6 +448,56 @@ object TuiModuleTest extends TestSuite:
       assert(finalState.appState.mode == TuiBrowsingMode.DryRun)
       assert(finalState.appState.executionState.exists(_.dryRunLines.contains("dry-run ok")))
 
+    test("failed dry-run opens error modal with redacted bounded snippets and logs"):
+      val fixture = writeFixture()
+      val secret  = "secret-token-value"
+      val lines   = Vector(
+        "failed beta: command: 'tar': command exited with status 2",
+        "  stdout: line-1",
+        "  stdout: line-2",
+        "  stdout: line-3",
+        "  stdout: line-4",
+        "  stdout: line-5",
+        "  stdout: line-6",
+        "  stdout: line-7",
+        s"  stderr: bad token $secret \u001b[31m"
+      )
+      val service  = RecordingDryRunService(InstallerResult(lines, 1))
+      val actions  = TuiAppActions.fromService(fixture.options, service)
+      val state    = withRedactions(sessionState(fixture), SensitiveValueRedactions(Vector(secret)))
+      val selected = PlanningTuiSession.run(
+        state,
+        Vector(TuiInput.Character('c'), TuiInput.Down, TuiInput.Character(' '))
+      )
+      val finalState = PlanningTuiSession.run(selected, Vector(TuiInput.Character('d')), actions)
+      val rendered   = stripAnsi(TuiAppRenderer.render(finalState.appState).mkString("\n"))
+      val logs       = finalState.appState.logs.mkString("\n")
+
+      assert(finalState.appState.modal.exists:
+        case TuiModal.Error(failure) => failure.category == TuiFailureCategory.DryRun &&
+          failure.action.contains("dry-run") &&
+          failure.toolName.contains("beta") &&
+          failure.rootCause.contains("failed beta") &&
+          failure.stdoutSnippet == Vector(
+            "line-2",
+            "line-3",
+            "line-4",
+            "line-5",
+            "line-6",
+            "line-7"
+          ) &&
+          failure.stderrSnippet.exists(_.contains("<redacted>"))
+        case _ => false)
+      assert(rendered.contains("Error: Dry run failed"))
+      assert(rendered.contains("category: dry-run"))
+      assert(rendered.contains("action: dry-run"))
+      assert(rendered.contains("tool: beta"))
+      assert(rendered.contains("suggestion: Review the dry-run root cause"))
+      assert(!rendered.contains(secret))
+      assert(!rendered.contains("\u001b[31m"))
+      assert(!logs.contains(secret))
+      assert(!logs.contains("\u001b[31m"))
+
     test("r opens a confirmation modal before real apply starts"):
       val fixture  = writeFixture()
       val service  = RecordingDryRunService(InstallerResult(Vector("apply ok"), 0))
@@ -507,6 +574,43 @@ object TuiModuleTest extends TestSuite:
       assert(finalState.appState.executionState.exists(_.summary.nonEmpty))
       assert(rendered.contains("mode apply execution"))
       assert(rendered.contains("apply selected 1 / 2: beta"))
+
+    test("failed apply row can open root-cause detail modal"):
+      val fixture = writeFixture()
+      val service = RecordingFailedApplyService(
+        InstallerResult(
+          Vector(
+            "failed beta: symlink: target -> path: permission denied",
+            "  stderr: ln failed"
+          ),
+          1
+        )
+      )
+      val actions  = TuiAppActions.fromService(fixture.options, service)
+      val selected = PlanningTuiSession.run(
+        sessionState(fixture),
+        Vector(TuiInput.Character('c'), TuiInput.Down, TuiInput.Character(' '))
+      )
+      val failed = PlanningTuiSession.run(
+        selected,
+        Vector(TuiInput.Character('r'), TuiInput.Enter),
+        actions
+      )
+      val rootCause =
+        PlanningTuiSession.run(failed, Vector(TuiInput.Escape, TuiInput.Enter), actions)
+      val rendered = stripAnsi(TuiAppRenderer.render(rootCause.appState).mkString("\n"))
+
+      assert(failed.appState.modal.exists:
+        case TuiModal.Error(_) => true
+        case _                 => false)
+      assert(rootCause.appState.modal.exists:
+        case TuiModal.RootCause(failure) => failure.toolName.contains("beta") &&
+          failure.rootCause.contains("failed beta") &&
+          failure.stderrSnippet.contains("ln failed")
+        case _ => false)
+      assert(rendered.contains("Root cause: beta"))
+      assert(rendered.contains("category: apply"))
+      assert(rendered.contains("stderr:"))
 
     test("interactive d action replaces the planning frame with execution output"):
       val fixture  = writeFixture()
@@ -957,6 +1061,15 @@ object TuiModuleTest extends TestSuite:
     settings
   )
 
+  private def withRedactions(
+      state: PlanningTuiState,
+      redactions: SensitiveValueRedactions
+  ): PlanningTuiState =
+    val snapshot = state.appState.snapshot
+    PlanningTuiState(state.appState.copy(snapshot =
+      snapshot.copy(plan = snapshot.plan.copy(redactions = redactions))
+    ))
+
   private def writeFixture(longValues: Boolean = false): TuiFixture =
     val root         = Files.createTempDirectory("binstaller-tui")
     val appsDir      = root.resolve("apps")
@@ -1081,6 +1194,27 @@ object TuiModuleTest extends TestSuite:
     )
     TuiFixture(root, config, appsDir, stateFile, url, install, installerOptions(config))
 
+  private def writeInvalidConfig(): Path =
+    val root   = Files.createTempDirectory("binstaller-tui-invalid")
+    val config = root.resolve("profile.yaml")
+    Files.writeString(
+      config,
+      """
+        |apiVersion: binstaller.io/v1alpha1
+        |kind: BinaryDistributionProfile
+        |metadata:
+        |  name: invalid-profile
+        |spec:
+        |  policy: {}
+        |  versions: {}
+        |  plan:
+        |    - name: ""
+        |      kind: binary-tool
+        |      spec: {}
+        |""".stripMargin
+    )
+    config
+
   private def installerOptions(config: Path): InstallerOptions = InstallerOptions(
     configPath = config.toString,
     statePath = None,
@@ -1169,6 +1303,53 @@ private final class RecordingDryRunService(result: InstallerResult) extends Bina
       exitCode = result.exitCode,
       stateFilePath = options.statePath,
       elapsedTime = Duration.ofMillis(2)
+    ))
+    result
+
+  def versions(options: InstallerOptions): InstallerResult = InstallerResult(Vector.empty, 0)
+
+  def lock(options: InstallerOptions, lockOptions: LockOptions): InstallerResult =
+    InstallerResult(Vector.empty, 0)
+
+private final class RecordingFailedApplyService(result: InstallerResult)
+    extends BinaryInstallerService:
+  var planOptions: Vector[InstallerOptions]  = Vector.empty
+  var applyOptions: Vector[InstallerOptions] = Vector.empty
+
+  def planWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult =
+    planOptions = planOptions :+ options
+    InstallerResult(Vector("unexpected plan"), 98)
+
+  def applyWithEvents(
+      options: InstallerOptions,
+      eventObserver: InstallerEventObserver
+  ): InstallerResult =
+    applyOptions = applyOptions :+ options
+    eventObserver.onEvent(InstallerEvent.ResolvingStarted(options.configPath, Duration.ZERO))
+    eventObserver.onEvent(InstallerEvent.PlanReady(1, options.statePath, Duration.ofMillis(1)))
+    eventObserver.onEvent(InstallerEvent.ToolStarted(
+      "beta",
+      InstallerPhase.CreatingSymlinks,
+      Duration.ofMillis(2)
+    ))
+    eventObserver.onEvent(InstallerEvent.ToolResult(
+      "beta",
+      ToolResultStatus.Failed,
+      None,
+      Some("symlink: target -> path: permission denied"),
+      Duration.ofMillis(3)
+    ))
+    eventObserver.onEvent(InstallerEvent.Summary(
+      InstallerRunStatus.Failed,
+      installed = 0,
+      failed = 1,
+      skipped = 0,
+      exitCode = 1,
+      stateFilePath = options.statePath,
+      elapsedTime = Duration.ofMillis(4)
     ))
     result
 
