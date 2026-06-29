@@ -323,6 +323,12 @@ kind: BinaryDistributionProfile
   `apply --dry-run --tui` against `config.example.yaml`. The release guide
   documents these static TUI native smoke checks for workflow, local native,
   and post-publish release smoke paths.
+- 2026-06-29: T007 extracted resolution and download responsibilities out of
+  `core/src/binstaller/core/CoreModule.scala` into focused core source files
+  for resolved plan types, plan resolution/interpolation/path validation, URL
+  provenance, HTTP text resolution, runtime HTTP URL/client helpers, and binary
+  download/body limits. The module graph was not changed, and `./mill core.test`,
+  `./mill __.compile`, scalafmt check, and git whitespace checks passed.
 
 ## Current Agent Loop State
 
