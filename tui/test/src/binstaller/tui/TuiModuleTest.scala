@@ -291,11 +291,64 @@ object TuiModuleTest extends TestSuite:
 
       assert(!model.rows.head.selected)
       assert(model.rows(1).selected)
+      assert(model.rows.forall(_.checked))
       assert(model.rows(1).status == PlanningTuiStatus.Active)
       assert(model.detail.exists(_.name == "beta"))
       assert(
         model.detail.exists(_.lines.exists(_.contains("https://example.invalid/releases/beta")))
       )
+
+    test("plan rows render checked and unchecked states deterministically"):
+      val finalState = PlanningTuiSession.run(
+        sessionState(writeFixture()),
+        Vector(TuiInput.Character(' '))
+      )
+      val first  = PlanningTuiRenderer.render(finalState.toModel).mkString("\n")
+      val second = PlanningTuiRenderer.render(finalState.toModel).mkString("\n")
+      val plain  = stripAnsi(first)
+
+      assert(finalState.appState.selectedToolNames == Set("beta"))
+      assert(finalState.toModel.rows.map(_.checked) == Vector(false, true))
+      assert(stripAnsi(first) == stripAnsi(second))
+      assert(plain.contains("[ ]"))
+      assert(plain.contains("[x]"))
+      assert(plain.contains("selected 1 / total 2"))
+
+    test("space toggles the current visible entry"):
+      val finalState = PlanningTuiSession.run(
+        sessionState(writeFixture()),
+        Vector(TuiInput.Down, TuiInput.Character(' '))
+      )
+      val model = finalState.toModel
+
+      assert(finalState.selectedIndex == 1)
+      assert(finalState.appState.selectedToolNames == Set("alpha"))
+      assert(model.rows.map(row => row.name -> row.checked) ==
+        Vector("alpha" -> true, "beta" -> false))
+      assert(model.header.selectionText == "selected 1 / total 2")
+
+    test("visible selection shortcuts preserve hidden selections"):
+      val filtered = PlanningTuiSession.run(
+        sessionState(writeFixture()),
+        Vector(
+          TuiInput.Slash,
+          TuiInput.Character('b'),
+          TuiInput.Character('e'),
+          TuiInput.Enter
+        )
+      )
+      val cleared  = PlanningTuiSession.run(filtered, Vector(TuiInput.Character('c')))
+      val selected = PlanningTuiSession.run(cleared, Vector(TuiInput.Character('a')))
+      val inverted = PlanningTuiSession.run(selected, Vector(TuiInput.Character('i')))
+
+      assert(filtered.toModel.rows.map(_.name) == Vector("beta"))
+      assert(cleared.appState.selectedToolNames == Set("alpha"))
+      assert(cleared.toModel.rows.map(_.checked) == Vector(false))
+      assert(cleared.toModel.header.selectionText == "selected 1 / total 2")
+      assert(selected.appState.selectedToolNames == Set("alpha", "beta"))
+      assert(selected.toModel.header.selectionText == "selected 2 / total 2")
+      assert(inverted.appState.selectedToolNames == Set("alpha"))
+      assert(inverted.toModel.header.selectionText == "selected 1 / total 2")
 
     test("state override is shown instead of manifest state file"):
       val fixture       = writeFixture()

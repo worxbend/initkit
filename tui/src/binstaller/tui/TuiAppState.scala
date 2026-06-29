@@ -29,6 +29,26 @@ final case class TuiSelection(selectedToolNames: Set[String]):
   /** Whether the given tool name is selected in the TUI workspace. */
   def contains(toolName: String): Boolean = selectedToolNames.contains(toolName)
 
+  /** Toggle one visible tool name without affecting any other selected entries. */
+  def toggle(toolName: String): TuiSelection =
+    if contains(toolName) then TuiSelection(selectedToolNames - toolName)
+    else TuiSelection(selectedToolNames + toolName)
+
+  /** Add visible tool names to the selected set without affecting hidden selections. */
+  def select(toolNames: Vector[String]): TuiSelection = TuiSelection(
+    selectedToolNames ++ toolNames
+  )
+
+  /** Remove visible tool names from the selected set without affecting hidden selections. */
+  def clear(toolNames: Vector[String]): TuiSelection = TuiSelection(
+    selectedToolNames -- toolNames
+  )
+
+  /** Invert visible tool names while preserving hidden selections. */
+  def invert(toolNames: Vector[String]): TuiSelection =
+    val visible = toolNames.toSet
+    TuiSelection((selectedToolNames -- visible) ++ (visible -- selectedToolNames))
+
   /** Count selected entries that still exist in the current resolved snapshot. */
   def countEntries(entries: Vector[TuiPlanEntry]): Int =
     entries.count(entry => contains(entry.name))
@@ -230,6 +250,10 @@ object TuiAppController:
     case TuiInput.End            => handleEnd(state)
     case TuiInput.Left           => state.copy(focus = state.focus.previous)
     case TuiInput.Right          => state.copy(focus = state.focus.next)
+    case TuiInput.Character(' ') => toggleCurrentVisible(state)
+    case TuiInput.Character('a') => selectVisible(state)
+    case TuiInput.Character('c') => clearVisible(state)
+    case TuiInput.Character('i') => invertVisible(state)
     case TuiInput.Slash          =>
       state.copy(filter = state.filter.copy(draft = Some(state.filter.value.getOrElse(""))))
     case TuiInput.Question              => toggleHelp(state)
@@ -292,6 +316,19 @@ object TuiAppController:
     val layout = PlanningTuiLayout.forViewport(state.viewport)
     state.copy(logScroll = (state.logScroll + delta).max(0).min(maxLogScroll(state, layout)))
 
+  private def toggleCurrentVisible(state: TuiAppState): TuiAppState = state.activeEntry match
+    case Some(entry) => state.withSelection(state.selection.toggle(entry.name))
+    case None        => state
+
+  private def selectVisible(state: TuiAppState): TuiAppState =
+    state.withSelection(state.selection.select(visibleToolNames(state)))
+
+  private def clearVisible(state: TuiAppState): TuiAppState =
+    state.withSelection(state.selection.clear(visibleToolNames(state)))
+
+  private def invertVisible(state: TuiAppState): TuiAppState =
+    state.withSelection(state.selection.invert(visibleToolNames(state)))
+
   private def commitFilter(state: TuiAppState): TuiAppState =
     val committed = state.filter.draft.flatMap(value => Option(value.trim).filter(_.nonEmpty))
     clampSelection(state.copy(filter = TuiAppFilter.committed(committed)))
@@ -314,6 +351,9 @@ object TuiAppController:
     )
 
   private def visibleEntryCount(state: TuiAppState): Int = state.visibleEntries.size
+
+  private def visibleToolNames(state: TuiAppState): Vector[String] =
+    state.visibleEntries.map(_.name)
 
   private def selectedDetailLines(state: TuiAppState): Int =
     PlanningTuiModel.fromAppState(state).detail.fold(0)(_.lines.size)

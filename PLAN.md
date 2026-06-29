@@ -49,6 +49,10 @@ as part of this refactor.
   filter, modal, logs, and optional execution state. The planning renderer and
   session now derive from that state, and TUI selection converts to core
   `ToolSelection` only through a boundary helper.
+- 2026-06-30: T003 rendered checkbox state in plan rows and added persistent
+  TUI-local selection transitions for Space, select-all-visible, clear-visible,
+  and invert-visible. Selection counts refresh in the header after each change,
+  and hidden selections survive filtering.
 
 ## Product Target
 

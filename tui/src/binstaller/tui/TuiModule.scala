@@ -214,6 +214,7 @@ final case class PlanningTuiHeader(
 final case class PlanningTuiRow(
     index: Int,
     selected: Boolean,
+    checked: Boolean,
     status: PlanningTuiStatus,
     name: String,
     kind: String,
@@ -262,6 +263,7 @@ object PlanningTuiModel:
       case (entry, index) => rowForTool(
           index,
           selected = index == selectedIndex,
+          checked = state.selection.contains(entry.name),
           entry.tool,
           state.snapshot.plan.redactions
         )
@@ -297,7 +299,8 @@ object PlanningTuiModel:
       logScroll = clampScroll(state.logScroll, logs.size, layout.logBodyHeight),
       helpOpen = state.helpOpen,
       footer = footerText(state.snapshot, visibleEntries.map(_.tool)),
-      keybar = "tab focus | shift-tab/b back | arrows select/scroll | / filter | ? help | q quit"
+      keybar =
+        "tab focus | arrows move | space toggle | a/c/i select/clear/invert | / filter | q quit"
     )
 
   /** Filter TUI plan entries by name or description using a case-insensitive contains match. */
@@ -330,6 +333,7 @@ object PlanningTuiModel:
   private def rowForTool(
       index: Int,
       selected: Boolean,
+      checked: Boolean,
       tool: ResolvedTool,
       redactions: SensitiveValueRedactions
   ): PlanningTuiRow =
@@ -341,6 +345,7 @@ object PlanningTuiModel:
     PlanningTuiRow(
       index = index + 1,
       selected = selected,
+      checked = checked,
       status = status,
       name = safe(tool.name, redactions),
       kind = "binary-tool",
@@ -1330,8 +1335,9 @@ object PlanningTuiRenderer:
       width: Int,
       focused: Boolean
   ): Vector[String] =
-    val header = s"${cell("#", 4)} ${cell("status", 10)} ${cell("name", 20)} ${cell("kind", 12)} " +
-      s"${cell("version", 18)} ${cell("install dir", 26)} ${cell("checksum", 10)} risk"
+    val header = s"${cell("#", 4)} ${cell("sel", 3)} ${cell("status", 10)} ${cell("name", 20)} " +
+      s"${cell("kind", 12)} ${cell("version", 18)} ${cell("install dir", 26)} " +
+      s"${cell("checksum", 10)} risk"
     val selectedIndex = rows.indexWhere(_.selected).max(0)
     val firstVisible  = windowStart(selectedIndex, rows.size, layout.tableBodyHeight)
     val visibleRows   = rows.slice(firstVisible, firstVisible + layout.tableBodyHeight)
@@ -1342,11 +1348,13 @@ object PlanningTuiRenderer:
       Vector(separator(width))
 
   private def rowLine(row: PlanningTuiRow, width: Int): String =
-    val marker = if row.selected then ">" else " "
-    val risks  = if row.riskMarkers.isEmpty then "none" else row.riskMarkers.mkString(",")
-    val plain  = s"$marker ${cell(row.index.toString, 3)} ${cell(row.status.label, 10)} " +
-      s"${cell(row.name, 20)} ${cell(row.kind, 12)} ${cell(row.version, 18)} " +
-      s"${cell(row.installDir, 26)} ${cell(row.checksumState, 10)} ${truncate(risks, 20)}"
+    val marker   = if row.selected then ">" else " "
+    val checkbox = if row.checked then "[x]" else "[ ]"
+    val risks    = if row.riskMarkers.isEmpty then "none" else row.riskMarkers.mkString(",")
+    val plain    = s"$marker ${cell(row.index.toString, 3)} $checkbox " +
+      s"${cell(row.status.label, 10)} ${cell(row.name, 20)} ${cell(row.kind, 12)} " +
+      s"${cell(row.version, 18)} ${cell(row.installDir, 26)} " +
+      s"${cell(row.checksumState, 10)} ${truncate(risks, 20)}"
     PlanningTuiStatus.style(row.status, fit(plain, width))
 
   private def detail(
