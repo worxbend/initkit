@@ -64,11 +64,13 @@ jobs:
             find out/app/nativeImage.dest -maxdepth 2 -type f -print >&2 || true
             exit 1
           fi
-          cp "$native_path" dist/initkit-linux-amd64
-          chmod +x dist/initkit-linux-amd64
-          ./dist/initkit-linux-amd64 --help
-          tar -C dist -czf dist/initkit-linux-amd64.tar.gz initkit-linux-amd64
-          sha256sum dist/initkit-linux-amd64 dist/initkit-linux-amd64.tar.gz > dist/SHA256SUMS
+          cp "$native_path" dist/binstaller-linux-amd64
+          chmod +x dist/binstaller-linux-amd64
+          ./dist/binstaller-linux-amd64 --help
+          ./dist/binstaller-linux-amd64 plan --config config.example.yaml
+          ./dist/binstaller-linux-amd64 apply --config config.example.yaml --dry-run
+          tar -C dist -czf dist/binstaller-linux-amd64.tar.gz binstaller-linux-amd64
+          sha256sum dist/binstaller-linux-amd64 dist/binstaller-linux-amd64.tar.gz > dist/SHA256SUMS
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -77,6 +79,6 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            dist/initkit-linux-amd64
-            dist/initkit-linux-amd64.tar.gz
+            dist/binstaller-linux-amd64
+            dist/binstaller-linux-amd64.tar.gz
             dist/SHA256SUMS

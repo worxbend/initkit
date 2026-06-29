@@ -127,6 +127,12 @@ kind: BinaryDistributionProfile
   scalafmt, and git whitespace checks all completed successfully afterward.
   Remaining risk is in release/documentation wiring, checksum coverage for
   unpinned upstream assets, and the known installer-script atomicity limitation.
+- 2026-06-29: T016 completed the documentation and release workflow pivot.
+  README now describes `binstaller`, its focused binary distribution scope,
+  release artifact names, CLI usage, and exit codes. The native release workflow
+  now packages `binstaller-linux-amd64` and smoke-tests native `--help`, `plan`,
+  and `apply --dry-run`. Recursive tests, app help smoke, and git whitespace
+  checks passed.
 
 ### User Experience Goals
 
