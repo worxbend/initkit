@@ -16,11 +16,9 @@ import binstaller.config.VersionResolverKind
 import binstaller.config.VersionSource
 
 import java.nio.file.Path
-import scala.jdk.CollectionConverters.*
 import scala.util.Failure
 import scala.util.Success
 import scala.util.Try
-import scala.util.matching.Regex
 
 /** Resolver for converting typed manifests into executable plans. */
 object PlanResolver:
@@ -35,16 +33,16 @@ object PlanResolver:
     if resolved.errors.isEmpty then Right(resolved.value)
     else Left(ResolvePlanError.ValidationFailed(resolved.errors))
 
-private final case class ResolvedValue[+A](value: A, errors: Vector[ValidationError]):
+private[core] final case class ResolvedValue[+A](value: A, errors: Vector[ValidationError]):
   def map[B](f: A => B): ResolvedValue[B] = ResolvedValue(f(value), errors)
 
-private object ResolvedValue:
+private[core] object ResolvedValue:
   def valid[A](value: A): ResolvedValue[A] = ResolvedValue(value, Vector.empty)
 
   def invalid[A](value: A, path: String, message: String): ResolvedValue[A] =
     ResolvedValue(value, Vector(ValidationError(path, message)))
 
-private final class ResolutionBuilder(
+private[core] final class ResolutionBuilder(
     profile: BinaryDistributionProfile,
     options: ResolutionOptions,
     httpTextClient: HttpTextClient
@@ -532,132 +530,3 @@ private final class ResolutionBuilder(
     RuntimeUrl.httpsUri(value) match
       case Right(_)      => Vector.empty
       case Left(message) => Vector(ValidationError(path, message))
-
-private[core] object Sha256SumChecksumFile:
-
-  private val HashPattern: Regex = "(?i)^[0-9a-f]{64}$".r
-
-  def find(content: String, file: String): Option[String] = content.linesIterator
-    .flatMap(parseLine)
-    .find((_, candidateFile) => candidateFile == file || fileName(candidateFile) == file)
-    .map((checksum, _) => checksum.toLowerCase(java.util.Locale.ROOT))
-
-  private def parseLine(line: String): Option[(String, String)] =
-    val trimmed = line.trim
-    if trimmed.isEmpty || trimmed.startsWith("#") then None
-    else
-      val parts = trimmed.split("\\s+", 2).toVector
-      parts match
-        case Vector(hash, path) if HashPattern.pattern.matcher(hash).matches() =>
-          Some(hash -> path.stripPrefix("*").trim)
-        case _ => None
-
-  private def fileName(path: String): String =
-    path.split('/').toVector.filter(_.nonEmpty).lastOption.getOrElse(path)
-
-private object ResolvedPathValidator:
-
-  def stateFile(value: String, path: String): Vector[ValidationError] =
-    filename(value, path, "state filename")
-
-  def downloadFilename(value: String, path: String): Vector[ValidationError] =
-    filename(value, path, "download filename")
-
-  def archivePath(value: String, path: String, label: String): Vector[ValidationError] =
-    relativePath(value, path, label, allowCurrentDirectory = true)
-
-  def installRelativePath(value: String, path: String, label: String): Vector[ValidationError] =
-    relativePath(value, path, label, allowCurrentDirectory = false)
-
-  def externalPath(value: String, path: String, label: String): Vector[ValidationError] =
-    pathSyntax(value, path, label)
-
-  def symlinkTarget(
-      value: String,
-      path: String,
-      installDir: String
-  ): Vector[ValidationError] =
-    val syntaxErrors = pathSyntax(value, path, "symlink target")
-    if syntaxErrors.nonEmpty then syntaxErrors
-    else
-      Try:
-        val installRoot = Path.of(installDir).toAbsolutePath.normalize()
-        val rawTarget   = Path.of(value)
-        val target      =
-          if rawTarget.isAbsolute then rawTarget.toAbsolutePath.normalize()
-          else installRoot.resolve(rawTarget).normalize()
-        installRoot -> target
-      match
-        case Failure(error) =>
-          Vector(ValidationError(path, s"invalid symlink target: ${error.getMessage}"))
-        case Success((installRoot, target)) if !target.startsWith(installRoot) =>
-          Vector(ValidationError(path, "symlink target must resolve inside installDir"))
-        case Success(_) => Vector.empty
-
-  def pathSyntax(value: String, path: String, label: String): Vector[ValidationError] =
-    if value.trim.isEmpty then Vector(ValidationError(path, s"$label must not be empty"))
-    else if value.exists(Character.isISOControl) then
-      Vector(ValidationError(path, s"$label must not contain control characters"))
-    else if value.contains('\\') then
-      Vector(ValidationError(path, s"$label must not contain backslashes"))
-    else if value.matches("^[A-Za-z]:.*") then
-      Vector(ValidationError(path, s"$label must not be drive-prefixed"))
-    else if hasTraversalSegment(value) then
-      Vector(ValidationError(path, s"$label must not contain traversal segments"))
-    else Vector.empty
-
-  private def filename(value: String, path: String, label: String): Vector[ValidationError] =
-    val syntaxErrors = pathSyntax(value, path, label)
-    if syntaxErrors.nonEmpty then syntaxErrors
-    else if value.contains('/') then
-      Vector(ValidationError(path, s"$label must be a filename, not a path"))
-    else if value == "." || value == ".." then
-      Vector(ValidationError(path, s"$label must not be a traversal segment"))
-    else
-      Try(Path.of(value)) match
-        case Failure(error) => Vector(ValidationError(path, s"invalid $label: ${error.getMessage}"))
-        case Success(file) if file.isAbsolute || file.getNameCount != 1 =>
-          Vector(ValidationError(path, s"$label must be a filename in the current directory"))
-        case Success(_) => Vector.empty
-
-  private def relativePath(
-      value: String,
-      path: String,
-      label: String,
-      allowCurrentDirectory: Boolean
-  ): Vector[ValidationError] =
-    val syntaxErrors = pathSyntax(value, path, label)
-    if syntaxErrors.nonEmpty then syntaxErrors
-    else if value == "." && allowCurrentDirectory then Vector.empty
-    else if value == "." then Vector(ValidationError(path, s"$label must not be current directory"))
-    else
-      Try(Path.of(value)) match
-        case Failure(error) => Vector(ValidationError(path, s"invalid $label: ${error.getMessage}"))
-        case Success(relative) if relative.isAbsolute =>
-          Vector(ValidationError(path, s"$label must be relative"))
-        case Success(_) => Vector.empty
-
-  private def hasTraversalSegment(value: String): Boolean =
-    Try(Path.of(value).iterator().asScala.exists(_.toString == "..")).getOrElse(false)
-
-private object TemplateInterpolator:
-  private val Variable: Regex = "\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}".r
-
-  def interpolate(
-      value: String,
-      path: String,
-      vars: Map[String, String]
-  ): ResolvedValue[String] =
-    // Only ${name} placeholders are recognized. Shell forms such as $(...) remain literal data.
-    val errors = variableNames(value).distinct.flatMap: name =>
-      if vars.contains(name) then Vector.empty
-      else Vector(ValidationError(path, s"unresolved variable '$name'"))
-
-    val rendered = Variable.replaceAllIn(
-      value,
-      matched => Regex.quoteReplacement(vars.getOrElse(matched.group(1), matched.matched))
-    )
-    ResolvedValue(rendered, errors)
-
-  def variableNames(value: String): Vector[String] =
-    Variable.findAllMatchIn(value).map(_.group(1)).toVector

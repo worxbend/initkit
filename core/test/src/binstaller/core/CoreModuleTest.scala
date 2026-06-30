@@ -30,7 +30,11 @@ import java.security.MessageDigest
 import java.time.Duration
 import java.util.Optional
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.GZIPOutputStream
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
@@ -48,6 +52,14 @@ object CoreModuleTest extends TestSuite:
   val tests: Tests = Tests:
     test("module path includes config before core"):
       assert(CoreModule.modulePath == Vector("config", "core"))
+
+    test("installer event context measures elapsed time from injected monotonic clock"):
+      var now     = 1_000L
+      val context = InstallerEventContext.start(InstallerEventObserver.none, () => now)
+
+      now = 1_250L
+
+      assert(context.elapsedTime == Duration.ofNanos(250L))
 
     test("pinned versions interpolate into URLs and paths"):
       val plan = resolve(validPinnedYaml)
@@ -890,6 +902,50 @@ object CoreModuleTest extends TestSuite:
       assert(result.lines.exists(_.startsWith("failed alpha: download:")))
       assert(result.lines.exists(_.contains("installed beta")))
       assert(Files.isRegularFile(tempRoot.resolve("apps/beta/bin/beta")))
+
+    test("apply downloads and stages tools concurrently up to configured parallelism"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-parallel-downloads")
+      val config   = writeConfig(tempRoot, twoToolYaml(tempRoot, "parallel.state.json"))
+      val client   = ConcurrentTrackingDownloadClient(
+        Vector("https://example.invalid/alpha", "https://example.invalid/beta")
+      )
+      val service = BinaryInstallerService.resolving(
+        FakeHttpTextClient(""),
+        DirectBinaryInstaller(client, InstallFileSystem.nio),
+        ApplyStateStore.nio(tempRoot)
+      )
+
+      val result = service.apply(applyOptions(config).copy(applyParallelism = ApplyParallelism(2)))
+
+      assert(result.exitCode == 0)
+      assert(client.maxInFlight >= 2)
+      assert(Files.isRegularFile(tempRoot.resolve("apps/alpha/bin/alpha")))
+      assert(Files.isRegularFile(tempRoot.resolve("apps/beta/bin/beta")))
+
+    test("sudo password requests stay serialized after parallel downloads"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-parallel-sudo")
+      val config   = writeConfig(tempRoot, twoSudoToolYaml(tempRoot))
+      val client   = ConcurrentTrackingDownloadClient(
+        Vector("https://example.invalid/alpha", "https://example.invalid/beta")
+      )
+      val credentials = ConcurrentTrackingSudoCredentialProvider()
+      val service     = BinaryInstallerService.resolving(
+        FakeHttpTextClient(""),
+        DirectBinaryInstaller(
+          client,
+          InstallFileSystem.nio,
+          PasswordPromptCommandExecutor(),
+          credentials
+        ),
+        ApplyStateStore.nio(tempRoot)
+      )
+
+      val result = service.apply(applyOptions(config).copy(applyParallelism = ApplyParallelism(2)))
+
+      assert(result.exitCode == 0)
+      assert(client.maxInFlight >= 2)
+      assert(credentials.maxInFlight == 1)
+      assert(credentials.toolNames == Vector("alpha", "beta"))
 
     test("zip archive file mapping lands at configured relative target path"):
       val tempRoot   = Files.createTempDirectory("binstaller-core-zip")
@@ -2279,6 +2335,56 @@ object CoreModuleTest extends TestSuite:
        |          - path: bin/beta
        |""".stripMargin
 
+  private def twoSudoToolYaml(tempRoot: Path): String =
+    val appsDir = tempRoot.resolve("apps")
+    s"""
+       |apiVersion: binstaller.io/v1alpha1
+       |kind: BinaryDistributionProfile
+       |metadata:
+       |  name: sudo-profile
+       |spec:
+       |  policy:
+       |    appsDir: "$appsDir"
+       |    allowSudoSymlinks: true
+       |  vars: {}
+       |  versions:
+       |    alpha: "1.0.0"
+       |    beta: "1.0.0"
+       |  plan:
+       |    - name: alpha
+       |      kind: binary-tool
+       |      spec:
+       |        versionRef: alpha
+       |        installDir: "$appsDir/alpha"
+       |        createDirectories:
+       |          - bin
+       |        download:
+       |          url: https://example.invalid/alpha
+       |          filename: alpha
+       |        executables:
+       |          - path: bin/alpha
+       |        symlinks:
+       |          - path: ${tempRoot.resolve("alpha-link")}
+       |            target: bin/alpha
+       |            sudo: true
+       |    - name: beta
+       |      kind: binary-tool
+       |      spec:
+       |        versionRef: beta
+       |        installDir: "$appsDir/beta"
+       |        createDirectories:
+       |          - bin
+       |        download:
+       |          url: https://example.invalid/beta
+       |          filename: beta
+       |        executables:
+       |          - path: bin/beta
+       |        symlinks:
+       |          - path: ${tempRoot.resolve("beta-link")}
+       |            target: bin/beta
+       |            sudo: true
+       |""".stripMargin
+
   private def invalidConfigYaml(tempRoot: Path): String =
     s"""
        |apiVersion: wrong.example/v1
@@ -2875,6 +2981,48 @@ private object RoutingBinaryDownloadClient:
     "https://example.invalid/beta"  -> Right("beta".getBytes(StandardCharsets.UTF_8))
   ))
 
+private final class ConcurrentTrackingDownloadClient(urls: Vector[String])
+    extends BinaryDownloadClient:
+
+  private val expectedStarts = CountDownLatch(urls.size)
+  private val active         = AtomicInteger(0)
+  private val peak           = AtomicInteger(0)
+
+  private val payloads =
+    urls.map(url => url -> fileName(url).getBytes(StandardCharsets.UTF_8)).toMap
+
+  def maxInFlight: Int = peak.get()
+
+  def download(url: String): Either[BinaryDownloadError, Array[Byte]] =
+    downloadWithProvenance(url).map(_.bytes)
+
+  override def downloadWithProvenance(
+      url: String,
+      progressObserver: BinaryDownloadProgressObserver
+  ): Either[BinaryDownloadError, BinaryDownloadResult] = payloads.get(url) match
+    case None        => Left(BinaryDownloadError(url, s"unexpected URL $url"))
+    case Some(bytes) =>
+      val current = active.incrementAndGet()
+      updatePeak(current)
+      expectedStarts.countDown()
+      val _ = expectedStarts.await(5, TimeUnit.SECONDS)
+      try
+        progressObserver.onProgress(BinaryDownloadProgress.Started(url, Some(bytes.length.toLong)))
+        progressObserver.onProgress(
+          BinaryDownloadProgress.Advanced(url, bytes.length.toLong, Some(bytes.length.toLong))
+        )
+        progressObserver.onProgress(
+          BinaryDownloadProgress.Finished(url, bytes.length.toLong, Some(bytes.length.toLong))
+        )
+        Right(BinaryDownloadResult(bytes, UrlProvenance.direct(url)))
+      finally
+        val _ = active.decrementAndGet()
+
+  private def updatePeak(current: Int): Unit =
+    val _ = peak.updateAndGet(previous => math.max(previous, current))
+
+  private def fileName(url: String): String = url.split('/').toVector.lastOption.getOrElse(url)
+
 private final class RoutingBinaryMetadataClient(results: Map[String, BinaryMetadata])
     extends BinaryMetadataClient:
 
@@ -3047,6 +3195,35 @@ private final class RecordingSudoCredentialProvider(
   ): Either[SudoCredentialError, SudoPassword] =
     recordedRequests = recordedRequests :+ request
     result
+
+private final class ConcurrentTrackingSudoCredentialProvider extends SudoCredentialProvider:
+
+  private val active   = AtomicInteger(0)
+  private val peak     = AtomicInteger(0)
+  private val requests = ConcurrentLinkedQueue[String]()
+
+  def maxInFlight: Int = peak.get()
+
+  def toolNames: Vector[String] = requests.iterator().asScala.toVector
+
+  def requestSudoPassword(
+      request: SudoCredentialRequest
+  ): Either[SudoCredentialError, SudoPassword] =
+    val _       = requests.add(request.toolName)
+    val current = active.incrementAndGet()
+    val _       = peak.updateAndGet(previous => math.max(previous, current))
+    try
+      Thread.sleep(50)
+      Right(SudoPassword.fromString("secret"))
+    finally
+      val _ = active.decrementAndGet()
+
+private final class PasswordPromptCommandExecutor extends CommandExecutor:
+
+  def run(spec: CommandSpec): Either[CommandExecutionError, Unit] =
+    if spec.argv == Vector("sudo", "-n", "true") then
+      Left(CommandExecutionError(spec, "sudo password required", Some(1)))
+    else Right(())
 
 private final class RecordingInstallFileSystem(
     stageFailure: Option[String] = None,

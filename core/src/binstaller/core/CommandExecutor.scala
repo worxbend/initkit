@@ -140,7 +140,7 @@ object CommandExecutor:
 private[core] object CommandEnvironment:
   val baseline: Map[String, String] = Map("PATH" -> sys.env.getOrElse("PATH", "/usr/bin:/bin"))
 
-private final class ProcessCommandExecutor(timeout: Duration) extends CommandExecutor:
+private[core] final class ProcessCommandExecutor(timeout: Duration) extends CommandExecutor:
   private val capturedOutputLimitBytes = 64 * 1024
 
   def run(spec: CommandSpec): Either[CommandExecutionError, Unit] = Try:

@@ -1,6 +1,9 @@
 package binstaller.core
 
 import java.time.Duration
+import ox.Ox
+import ox.channels.Actor
+import ox.channels.BufferCapacity
 
 /** Coarse lifecycle phases emitted by plan/apply execution. */
 enum InstallerPhase:
@@ -106,16 +109,27 @@ object InstallerEventObserver:
 
 private[core] final case class InstallerEventContext(
     observer: InstallerEventObserver,
-    startedAtNanos: Long
+    startedAtNanos: Long,
+    nanoTime: () => Long
 ):
-  def elapsedTime: Duration = Duration.ofNanos(System.nanoTime() - startedAtNanos)
+  def elapsedTime: Duration = Duration.ofNanos(nanoTime() - startedAtNanos)
 
   def emit(event: Duration => InstallerEvent): Unit = observer.onEvent(event(elapsedTime))
+
+  def serialized(using Ox, BufferCapacity): InstallerEventContext =
+    val sink = Actor.create(SerializedInstallerEventSink(observer))
+    copy(observer = event => sink.ask(_.emit(event)))
 
 private[core] object InstallerEventContext:
 
   def start(observer: InstallerEventObserver): InstallerEventContext =
-    InstallerEventContext(observer, System.nanoTime())
+    start(observer, () => System.nanoTime())
+
+  def start(observer: InstallerEventObserver, nanoTime: () => Long): InstallerEventContext =
+    InstallerEventContext(observer, nanoTime(), nanoTime)
+
+private[core] final class SerializedInstallerEventSink(observer: InstallerEventObserver):
+  def emit(event: InstallerEvent): Unit = observer.onEvent(event)
 
 /** Successful installation of a single tool. */
 final case class ToolInstallSuccess(

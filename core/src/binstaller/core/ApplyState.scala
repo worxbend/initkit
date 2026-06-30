@@ -119,7 +119,7 @@ private[core] object StatePathResolver:
       message: String
   ): Either[ApplyStateError.InvalidPath, Path] = Left(ApplyStateError.InvalidPath(path, message))
 
-private final class NioApplyStateStore(val cwd: Path) extends ApplyStateStore:
+private[core] final class NioApplyStateStore(val cwd: Path) extends ApplyStateStore:
 
   def load(path: Path): Either[ApplyStateError, Option[ApplyState]] =
     if !Files.exists(path) then Right(None)

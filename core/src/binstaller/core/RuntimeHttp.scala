@@ -7,7 +7,7 @@ import scala.util.Failure
 import scala.util.Success
 import scala.util.Try
 
-private object RuntimeHttpClient:
+private[core] object RuntimeHttpClient:
   val requestTimeout: Duration = Duration.ofSeconds(30)
 
   def create(): HttpClient = HttpClient.newBuilder()
@@ -15,7 +15,7 @@ private object RuntimeHttpClient:
     .followRedirects(HttpClient.Redirect.NORMAL)
     .build()
 
-private object RuntimeUrl:
+private[core] object RuntimeUrl:
 
   def httpsUri(url: String): Either[String, URI] = Try(URI.create(url)) match
     case Failure(error)                           => Left(s"invalid URL: ${error.getMessage}")

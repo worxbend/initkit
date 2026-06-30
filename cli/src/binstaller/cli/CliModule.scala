@@ -1,6 +1,7 @@
 package binstaller.cli
 
 import binstaller.core.BinaryInstallerService
+import binstaller.core.ApplyParallelism
 import binstaller.core.HttpTextClient
 import binstaller.core.InstallerOptions
 import binstaller.core.InstallerResult
@@ -250,8 +251,9 @@ private[cli] final class ApplyCommand(
     service: BinaryInstallerService,
     out: PrintWriter
 ) extends SelectableCommand(root, out):
-  private var lockedApply: LockedApplyMode = LockedApplyMode.Disabled
-  private var lockPath: String             = LockOptions.defaultOutputPath
+  private var lockedApply: LockedApplyMode       = LockedApplyMode.Disabled
+  private var lockPath: String                   = LockOptions.defaultOutputPath
+  private var applyParallelism: ApplyParallelism = ApplyParallelism.default
 
   @CliOption(
     names = Array("--locked"),
@@ -266,11 +268,21 @@ private[cli] final class ApplyCommand(
   )
   def setLockPath(value: String): Unit = lockPath = value
 
+  @CliOption(
+    names = Array("--parallelism"),
+    paramLabel = "N",
+    description = Array("Number of tools to download and stage concurrently. Default: 4.")
+  )
+  def setParallelism(value: Int): Unit = ApplyParallelism.fromInt(value) match
+    case Right(parallelism) => applyParallelism = parallelism
+    case Left(message)      => throw IllegalArgumentException(message)
+
   override def call(): Integer = executeWithOptions(
     _.copy(
       selection = selection,
       lockPath = lockPath,
-      lockedApply = lockedApply
+      lockedApply = lockedApply,
+      applyParallelism = applyParallelism
     ),
     options =>
       val eventRenderer = CliApplyEventRenderer(out)

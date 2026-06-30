@@ -46,16 +46,16 @@ private[core] object GitHubReleaseVersions:
       case Success(_)                       => Left("empty tag_name")
       case Failure(error) => Left(s"invalid GitHub release JSON: ${error.getMessage}")
 
-private final case class GitHubReleaseCandidate(
+private[core] final case class GitHubReleaseCandidate(
     toolName: String,
     repo: GitHubRepo,
     current: String
 )
 
-private final case class GitHubRepo(owner: String, name: String):
+private[core] final case class GitHubRepo(owner: String, name: String):
   def latestReleaseApiUrl: String = s"https://api.github.com/repos/$owner/$name/releases/latest"
 
-private object GitHubRepo:
+private[core] object GitHubRepo:
 
   def fromReleaseDownloadUrl(url: String): Option[GitHubRepo] = Try(URI.create(url)) match
     case Success(uri) if Option(uri.getHost).contains("github.com") =>
@@ -68,10 +68,10 @@ private object GitHubRepo:
     Option(uri.getPath).map:
       _.split('/').toVector.filter(_.nonEmpty)
 
-private enum VersionOrder:
+private[core] enum VersionOrder:
   case Greater, Equal, Less, Unknown
 
-private object VersionOrdering:
+private[core] object VersionOrdering:
   private val VersionToken = """(\d+(?:\.\d+)*)""".r
 
   def compare(left: String, right: String): VersionOrder =

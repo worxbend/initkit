@@ -1,6 +1,7 @@
 package binstaller.cli
 
 import binstaller.core.BinaryInstallerService
+import binstaller.core.ApplyParallelism
 import binstaller.core.BinaryDownloadClient
 import binstaller.core.BinaryDownloadError
 import binstaller.core.BinaryDownloadProgress
@@ -25,6 +26,8 @@ import java.io.PrintWriter
 import java.io.StringWriter
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 object CliModuleTest extends TestSuite:
 
@@ -139,6 +142,16 @@ object CliModuleTest extends TestSuite:
       assert(result.exitCode == 0)
       assert(service.applyOptions.exists(_.lockedApply == LockedApplyMode.Enabled))
       assert(service.applyOptions.exists(_.lockPath == "custom.lock.json"))
+
+    test("apply forwards parallelism"):
+      val service = RecordingInstallerService()
+      val result  = runCli(
+        Vector("apply", "--config", "profile.yaml", "--parallelism", "8"),
+        service
+      )
+
+      assert(result.exitCode == 0)
+      assert(service.applyOptions.exists(_.applyParallelism == ApplyParallelism(8)))
 
     test("plan forwards locked options"):
       val service = RecordingInstallerService()
@@ -304,6 +317,39 @@ object CliModuleTest extends TestSuite:
       assert(result.out.contains("\u001b["))
       assert(Files.readString(appsDir.resolve("alpha/bin/alpha")) == "alpha-binary")
 
+    test("apply renders overlapping downloads as separate progress lines"):
+      val tempRoot = Files.createTempDirectory("binstaller-cli-parallel-progress")
+      val appsDir  = tempRoot.resolve("apps")
+      val config   = writeConfig(tempRoot, parallelProgressYaml(appsDir))
+      val service  = BinaryInstallerService.resolving(
+        FakeHttpTextClient("v1.34.0"),
+        DirectBinaryInstaller(
+          ConcurrentProgressBinaryDownloadClient(Map(
+            "https://example.invalid/alpha" -> "alpha-binary".getBytes,
+            "https://example.invalid/beta"  -> "beta-binary".getBytes
+          )),
+          InstallFileSystem.nio
+        )
+      )
+
+      val result = runCli(
+        Vector("apply", "--config", config.toString, "--parallelism", "2"),
+        service
+      )
+
+      assert(result.exitCode == 0)
+      val plainOutput = stripAnsi(result.out)
+      assert(plainOutput.contains("⬇ downloading alpha"))
+      assert(plainOutput.contains("⬇ downloading beta"))
+      assert(plainOutput.contains("✅ completed alpha [██████████████████████████████] 100%"))
+      assert(plainOutput.contains("✅ completed beta [██████████████████████████████] 100%"))
+      assert(result.out.contains("\u001b[2A"))
+      assert(result.out.contains("\u001b[2K"))
+      assert(!plainOutput.contains("https://example.invalid"))
+      assert(plainOutput.contains("installed alpha"))
+      assert(plainOutput.contains("installed beta"))
+      assert(plainOutput.contains("✅ installed: 2"))
+
   private def runCli(
       args: Vector[String],
       service: BinaryInstallerService = BinaryInstallerService.placeholder
@@ -386,6 +432,43 @@ object CliModuleTest extends TestSuite:
                                                        |          - path: bin/alpha
                                                        |""".stripMargin
 
+  private def parallelProgressYaml(appsDir: Path): String =
+    s"""
+       |apiVersion: binstaller.io/v1alpha1
+       |kind: BinaryDistributionProfile
+       |metadata:
+       |  name: parallel-progress
+       |spec:
+       |  policy:
+       |    appsDir: "$appsDir"
+       |    requireConfirmation: true
+       |  vars: {}
+       |  versions:
+       |    alpha: "1.0.0"
+       |    beta: "1.0.0"
+       |  plan:
+       |    - name: alpha
+       |      kind: binary-tool
+       |      spec:
+       |        versionRef: alpha
+       |        installDir: "$appsDir/alpha"
+       |        download:
+       |          url: https://example.invalid/alpha
+       |          filename: alpha
+       |        executables:
+       |          - path: bin/alpha
+       |    - name: beta
+       |      kind: binary-tool
+       |      spec:
+       |        versionRef: beta
+       |        installDir: "$appsDir/beta"
+       |        download:
+       |          url: https://example.invalid/beta
+       |          filename: beta
+       |        executables:
+       |          - path: bin/beta
+       |""".stripMargin
+
   private def findRepoFile(name: String): Path = repoRootCandidates
     .map(_.resolve(name))
     .find(Files.isRegularFile(_))
@@ -460,6 +543,29 @@ private final class ProgressBinaryDownloadClient(bytes: Array[Byte]) extends Bin
     progressObserver.onProgress(BinaryDownloadProgress.Advanced(url, halfway, total))
     progressObserver.onProgress(BinaryDownloadProgress.Finished(url, bytes.length.toLong, total))
     Right(bytes)
+
+private final class ConcurrentProgressBinaryDownloadClient(payloads: Map[String, Array[Byte]])
+    extends BinaryDownloadClient:
+
+  private val starts = CountDownLatch(payloads.size)
+
+  def download(url: String): Either[BinaryDownloadError, Array[Byte]] =
+    payloads.get(url).toRight(BinaryDownloadError(url, s"unexpected URL $url"))
+
+  override def download(
+      url: String,
+      progressObserver: BinaryDownloadProgressObserver
+  ): Either[BinaryDownloadError, Array[Byte]] = payloads.get(url) match
+    case None        => Left(BinaryDownloadError(url, s"unexpected URL $url"))
+    case Some(bytes) =>
+      val total   = Some(bytes.length.toLong)
+      val halfway = bytes.length.toLong / 2L
+      progressObserver.onProgress(BinaryDownloadProgress.Started(url, total))
+      starts.countDown()
+      val _ = starts.await(5, TimeUnit.SECONDS)
+      progressObserver.onProgress(BinaryDownloadProgress.Advanced(url, halfway, total))
+      progressObserver.onProgress(BinaryDownloadProgress.Finished(url, bytes.length.toLong, total))
+      Right(bytes)
 
 private final class RecordingInstallerService extends BinaryInstallerService:
 

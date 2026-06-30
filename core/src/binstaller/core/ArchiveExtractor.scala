@@ -16,12 +16,12 @@ import scala.util.Success
 import scala.util.Try
 import scala.util.Using
 
-private enum ArchiveEntryKind:
+private[core] enum ArchiveEntryKind:
   case File, Directory
 
-private final case class ArchiveEntry(name: String, kind: ArchiveEntryKind)
+private[core] final case class ArchiveEntry(name: String, kind: ArchiveEntryKind)
 
-private final case class PlannedArchiveFile(source: String, target: Path)
+private[core] final case class PlannedArchiveFile(source: String, target: Path)
 
 private[core] object ArchiveExtractor:
 

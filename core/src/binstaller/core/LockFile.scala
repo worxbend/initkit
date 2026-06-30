@@ -119,7 +119,7 @@ object LockFileStore:
   /** NIO-backed lock-file storage. */
   def nio: LockFileStore = NioLockFileStore
 
-private object NioLockFileStore extends LockFileStore:
+private[core] object NioLockFileStore extends LockFileStore:
 
   def load(path: Path): Either[LockFileError, LockFile] =
     val normalized = path.toAbsolutePath.normalize()
