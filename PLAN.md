@@ -512,3 +512,15 @@ baseline and close the remaining gaps in this order:
   test/smoke output. Local live-TTY password smoke remains manual because
   `test -t 0` exits 1; `command -v native-image` also exits 1 while
   `java -version` reports OpenJDK 25.0.3.
+- 2026-06-30: Implementation iteration 50 completed T008. Browsing still
+  defaults the lower info bar to selected-row details, while plan preview,
+  dry-run output, and errors now render in the lower info bar without replacing
+  the table-first workspace. Logs are focusable and scrollable in both
+  browsing and execution contexts.
+- T008 error handling now shows failures in the lower info bar first and opens
+  root-cause details on demand. Root-cause details include action, affected
+  tool/path where known, exit code, stdout/stderr excerpts, duration when
+  available, environment hints, suggestions, and existing redaction. Validation
+  passed: `./mill tui.test`, `./mill cli.test`, `./mill __.compile`,
+  `./mill mill.scalalib.scalafmt/checkFormatAll`,
+  `jq empty .agent-loop/tasks.json`, and `git diff --check`.

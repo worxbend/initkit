@@ -24,10 +24,13 @@ final case class TuiFailure(
     action: Option[String],
     toolName: Option[String],
     path: Option[String],
+    exitCode: Option[Int],
+    duration: Option[String],
     rootCause: String,
     suggestion: String,
     stdoutSnippet: Vector[String],
     stderrSnippet: Vector[String],
+    environmentHints: Vector[String],
     detailLines: Vector[String]
 ):
 
@@ -36,11 +39,14 @@ final case class TuiFailure(
     action.map(value => s"action: $value").toVector ++
     toolName.map(value => s"tool: $value").toVector ++
     path.map(value => s"path: $value").toVector ++
+    exitCode.map(value => s"exit code: $value").toVector ++
+    duration.map(value => s"duration: $value").toVector ++
     Vector(
       s"root cause: $rootCause",
       s"suggestion: $suggestion"
     ) ++ snippetLines("stdout", stdoutSnippet) ++
     snippetLines("stderr", stderrSnippet) ++
+    environmentSection ++
     detailSection
 
   private def snippetLines(label: String, lines: Vector[String]): Vector[String] =
@@ -51,6 +57,11 @@ final case class TuiFailure(
     val compact = detailLines.filterNot(_.isBlank).distinct.take(8)
     if compact.isEmpty then Vector.empty
     else Vector("details:") ++ compact.map(line => s"  $line")
+
+  private def environmentSection: Vector[String] =
+    val compact = environmentHints.filterNot(_.isBlank).distinct.take(4)
+    if compact.isEmpty then Vector.empty
+    else Vector("environment:") ++ compact.map(line => s"  $line")
 
 /** Constructors for structured TUI failures. */
 object TuiFailure:
@@ -83,7 +94,8 @@ object TuiFailure:
       result: InstallerResult,
       affectedTool: Option[String],
       affectedPath: Option[String],
-      redactions: SensitiveValueRedactions
+      redactions: SensitiveValueRedactions,
+      duration: Option[java.time.Duration] = None
   ): TuiFailure =
     val rawLines  = splitLines(result.lines)
     val safeLines = RenderSafety.displayLines(rawLines, redactions)
@@ -95,7 +107,10 @@ object TuiFailure:
       affectedTool = affectedTool.orElse(extractTool(safeLines)),
       affectedPath = affectedPath.orElse(extractPath(safeLines)),
       lines = safeLines,
-      redactions = SensitiveValueRedactions.empty
+      redactions = SensitiveValueRedactions.empty,
+      exitCode =
+        parsedExitCode(safeLines).orElse(Option.when(result.exitCode != 0)(result.exitCode)),
+      duration = duration.map(ExecutionTuiRenderer.formatDuration)
     )
 
   /** Build a terminal-boundary failure from an exception. */
@@ -116,7 +131,9 @@ object TuiFailure:
       affectedTool: Option[String],
       affectedPath: Option[String],
       lines: Vector[String],
-      redactions: SensitiveValueRedactions
+      redactions: SensitiveValueRedactions,
+      exitCode: Option[Int] = None,
+      duration: Option[String] = None
   ): TuiFailure =
     val safeLines = RenderSafety.displayLines(lines, redactions)
     val stdout    = snippet("stdout", safeLines)
@@ -127,10 +144,14 @@ object TuiFailure:
       action = action.map(RenderSafety.display(_, redactions)),
       toolName = affectedTool.map(RenderSafety.display(_, redactions)),
       path = affectedPath.map(RenderSafety.display(_, redactions)),
+      exitCode = exitCode.orElse(parsedExitCode(safeLines)),
+      duration =
+        duration.orElse(parsedDuration(safeLines)).map(RenderSafety.display(_, redactions)),
       rootCause = rootCause(safeLines),
       suggestion = suggestion(category),
       stdoutSnippet = stdout,
       stderrSnippet = stderr,
+      environmentHints = environmentHints(category, safeLines),
       detailLines = detailLines(safeLines)
     )
 
@@ -164,6 +185,16 @@ object TuiFailure:
     .find(line => line.nonEmpty && !isOutputLine(line))
     .getOrElse("the action failed without a detailed message")
 
+  private def parsedExitCode(lines: Vector[String]): Option[Int] = lines.collectFirst:
+    case line if line.stripLeading().toLowerCase(java.util.Locale.ROOT).startsWith("exit code:") =>
+      line.stripLeading().drop("exit code:".length).trim.toIntOption
+  .flatten
+
+  private def parsedDuration(lines: Vector[String]): Option[String] = lines.collectFirst:
+    case line if line.stripLeading().toLowerCase(java.util.Locale.ROOT).startsWith("duration:") =>
+      line.stripLeading().drop("duration:".length).trim
+  .filter(_.nonEmpty)
+
   private def snippet(label: String, lines: Vector[String]): Vector[String] =
     val prefix = s"$label:"
     lines
@@ -179,6 +210,24 @@ object TuiFailure:
   private def isOutputLine(line: String): Boolean =
     val trimmed = line.stripLeading()
     trimmed.startsWith("stdout:") || trimmed.startsWith("stderr:")
+
+  private def environmentHints(
+      category: TuiFailureCategory,
+      lines: Vector[String]
+  ): Vector[String] =
+    val text        = lines.mkString("\n").toLowerCase(java.util.Locale.ROOT)
+    val commandHint =
+      Option.when(text.contains("command") || text.contains("sudo") || text.contains("tar"))(
+        "commands run with a modeled environment; parent process secrets are not inherited"
+      )
+    val redactionHint = Some("displayed diagnostics are sanitized with configured redactions")
+    val retryHint     = category match
+      case TuiFailureCategory.DryRun | TuiFailureCategory.Apply =>
+        Some("rerun after fixing the manifest, filesystem permissions, network, or lock state")
+      case TuiFailureCategory.Terminal =>
+        Some("terminal failures can be compared with the non-interactive command output")
+      case _ => None
+    Vector(commandHint, redactionHint, retryHint).flatten
 
   private def suggestion(category: TuiFailureCategory): String = category match
     case TuiFailureCategory.Validation =>

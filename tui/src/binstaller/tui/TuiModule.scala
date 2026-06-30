@@ -270,8 +270,10 @@ final case class PlanningTuiModel(
     detailScroll: Int,
     logs: Vector[String],
     logScroll: Int,
+    infoOutput: Option[TuiInfoOutput],
     helpOpen: Boolean,
     modal: Option[TuiModal],
+    modalScroll: Int,
     footer: String,
     keybar: String
 )
@@ -328,8 +330,10 @@ object PlanningTuiModel:
       ),
       logs = state.logs,
       logScroll = clampScroll(state.logScroll, logs.size, layout.logBodyHeight),
+      infoOutput = state.infoOutput,
       helpOpen = state.helpOpen,
       modal = state.modal,
+      modalScroll = state.modalScroll,
       footer = footerText(state.snapshot, visibleEntries.map(_.tool)),
       keybar =
         "p plan | d dry-run | r apply | tab focus | enter details | l logs | space | a/c/i | / filter | ? help | q quit"
@@ -603,12 +607,16 @@ final case class ExecutionTuiModel(
     active: Option[ExecutionActiveTool],
     rows: Vector[ExecutionToolRow],
     logs: Vector[String],
+    logScroll: Int,
     dryRunLines: Vector[String],
+    failureOutput: Option[TuiFailure],
     summary: Option[String],
     spinnerFrame: Int,
+    focusedPane: TuiPane,
     focusedRowIndex: Int,
     keybar: String,
-    modal: Option[TuiModal]
+    modal: Option[TuiModal],
+    modalScroll: Int
 )
 
 /** Event-accumulating execution state for live and static apply TUI rendering. */
@@ -623,11 +631,14 @@ final case class ExecutionTuiState(
     rows: Vector[ExecutionToolRow],
     focusedRowIndex: Int,
     logs: Vector[String],
+    logScroll: Int,
     dryRunLines: Vector[String],
+    failureOutput: Option[TuiFailure],
     summary: Option[InstallerEvent.Summary],
     elapsedTime: Duration,
     redactions: SensitiveValueRedactions,
-    modal: Option[TuiModal]
+    modal: Option[TuiModal],
+    modalScroll: Int
 ):
 
   /** Convert accumulated execution state into a deterministic render model. */
@@ -647,12 +658,16 @@ final case class ExecutionTuiState(
       active = active,
       rows = rows,
       logs = logs,
+      logScroll = logScroll,
       dryRunLines = dryRunLines,
+      failureOutput = failureOutput,
       summary = summaryLine,
       spinnerFrame = spinnerFrame,
+      focusedPane = TuiPane.Plan,
       focusedRowIndex = focusedRowIndex,
-      keybar = "Enter root cause | terminal restored after apply completes",
-      modal = modal
+      keybar = "Enter root cause | l logs | Tab focus | terminal restored after apply completes",
+      modal = modal,
+      modalScroll = modalScroll
     )
 
   /** Failed row detail for the currently focused execution row. */
@@ -776,7 +791,8 @@ final case class ExecutionTuiState(
             InstallerResult(Vector(s"failed $toolName: $summary"), 1),
             Some(toolName),
             installDir,
-            redactions
+            redactions,
+            Some(elapsed)
           )
         )
         val nextRows =
@@ -829,7 +845,8 @@ final case class ExecutionTuiState(
         result,
         None,
         stateFilePath,
-        redactions
+        redactions,
+        Option.when(elapsedTime != Duration.ZERO)(elapsedTime)
       )
     )
     val nextRows = enrichFailedRows(result)
@@ -840,14 +857,29 @@ final case class ExecutionTuiState(
       logs =
         (logs ++ RenderSafety.displayLines(failureLogs, redactions) ++
           failure.toVector.flatMap(value => value.title +: value.renderLines)).takeRight(80),
-      modal = failure.map(TuiModal.Error.apply)
+      failureOutput = failure,
+      modal = None,
+      modalScroll = 0
     )
 
   /** Handle terminal-local inputs relevant to execution rendering. */
-  def handle(input: TuiInput): ExecutionTuiState = input match
-    case TuiInput.Resize(value) => copy(viewport = value)
-    case TuiInput.Up            => moveFocus(-1)
-    case TuiInput.Down          => moveFocus(1)
+  def handle(input: TuiInput): ExecutionTuiState = handle(input, TuiPane.Plan)
+
+  /** Handle terminal-local inputs, routing scroll keys to logs when log focus is active. */
+  def handle(input: TuiInput, focusedPane: TuiPane): ExecutionTuiState = input match
+    case TuiInput.Resize(value)                         => copy(viewport = value)
+    case TuiInput.Up if focusedPane == TuiPane.Logs     => scrollLogs(-1)
+    case TuiInput.Down if focusedPane == TuiPane.Logs   => scrollLogs(1)
+    case TuiInput.PageUp if focusedPane == TuiPane.Logs =>
+      scrollLogs(-ExecutionTuiLayout.forViewport(viewport).logBodyHeight)
+    case TuiInput.PageDown if focusedPane == TuiPane.Logs =>
+      scrollLogs(ExecutionTuiLayout.forViewport(viewport).logBodyHeight)
+    case TuiInput.Home if focusedPane == TuiPane.Logs           => copy(logScroll = 0)
+    case TuiInput.End if focusedPane == TuiPane.Logs            => copy(logScroll = maxLogScroll)
+    case TuiInput.MouseWheelUp if focusedPane == TuiPane.Logs   => scrollLogs(-1)
+    case TuiInput.MouseWheelDown if focusedPane == TuiPane.Logs => scrollLogs(1)
+    case TuiInput.Up                                            => moveFocus(-1)
+    case TuiInput.Down                                          => moveFocus(1)
     case TuiInput.PageUp   => moveFocus(-ExecutionTuiLayout.forViewport(viewport).rowBodyHeight)
     case TuiInput.PageDown => moveFocus(ExecutionTuiLayout.forViewport(viewport).rowBodyHeight)
     case TuiInput.Home     => copy(focusedRowIndex = 0)
@@ -917,6 +949,14 @@ final case class ExecutionTuiState(
     (focusedRowIndex + delta).max(0).min((rows.size - 1).max(0))
   )
 
+  private def scrollLogs(delta: Int): ExecutionTuiState = copy(logScroll =
+    (logScroll + delta).max(0).min(maxLogScroll)
+  )
+
+  private def maxLogScroll: Int =
+    val layout = ExecutionTuiLayout.forViewport(viewport)
+    (logs.size - layout.logBodyHeight).max(0)
+
   private def focusIndexFor(toolName: String, nextRows: Vector[ExecutionToolRow]): Int =
     nextRows.indexWhere(_.name == toolName) match
       case -1    => focusedRowIndex
@@ -946,7 +986,8 @@ final case class ExecutionTuiState(
               result,
               Some(row.name),
               stateFilePath,
-              redactions
+              redactions,
+              Option.when(row.elapsedTime != Duration.ZERO)(row.elapsedTime)
             ))
           )
         case row => row
@@ -988,11 +1029,14 @@ object ExecutionTuiState:
       rows = candidateRows,
       focusedRowIndex = 0,
       logs = settings.logs,
+      logScroll = 0,
       dryRunLines = Vector.empty,
+      failureOutput = None,
       summary = None,
       elapsedTime = Duration.ZERO,
       redactions = settings.redactions,
-      modal = None
+      modal = None,
+      modalScroll = 0
     )
 
 private final class CollectingExecutionTuiObserver(
@@ -1028,7 +1072,12 @@ private final class RenderingExecutionTuiObserver(
 
 private[tui] object TuiModalRenderer:
 
-  def render(value: Option[TuiModal], width: Int): Vector[String] = value match
+  def render(
+      value: Option[TuiModal],
+      width: Int,
+      scroll: Int = 0,
+      height: Int = Int.MaxValue
+  ): Vector[String] = value match
     case None                               => Vector.empty
     case Some(TuiModal.Help)                => help(width)
     case Some(TuiModal.ConfirmApply(names)) => Vector(
@@ -1057,16 +1106,40 @@ private[tui] object TuiModalRenderer:
       )
     case Some(TuiModal.Error(failure)) => titled(
         s"Error: ${failure.title}",
-        failure.renderLines,
+        visibleModalLines(failure.renderLines, scroll, height),
         PlanningTuiStatus.Failed,
         width
       )
     case Some(TuiModal.RootCause(failure)) => titled(
         s"Root cause: ${failure.toolName.getOrElse(failure.title)}",
-        failure.renderLines,
+        visibleModalLines(failure.renderLines, scroll, height),
         PlanningTuiStatus.Failed,
         width
       )
+
+  def modalLines(value: TuiModal): Vector[String] = value match
+    case TuiModal.Help => Vector(
+        "Tab focus | Space select | a toggle all | c clear | i invert",
+        "p plan preview | d dry-run | r apply | l logs | / filter | q quit",
+        "Enter focuses selected entry details or confirms modal actions.",
+        "Esc closes modal/filter.",
+        "q or Ctrl+C exits after restoring the terminal."
+      )
+    case TuiModal.ConfirmApply(names)    => names
+    case TuiModal.PasswordPrompt(prompt) => passwordPromptLines(prompt)
+    case TuiModal.Message(title, lines)  => title +: lines
+    case TuiModal.Error(failure)         => failure.renderLines
+    case TuiModal.RootCause(failure)     => failure.renderLines
+
+  private def visibleModalLines(
+      lines: Vector[String],
+      scroll: Int,
+      height: Int
+  ): Vector[String] =
+    if height == Int.MaxValue then lines
+    else
+      val clippedScroll = scroll.max(0).min((lines.size - height).max(0))
+      lines.slice(clippedScroll, clippedScroll + height)
 
   private def passwordPromptLines(prompt: TuiPasswordPromptView): Vector[String] = Vector(
     s"operation: ${prompt.operation}",
@@ -1288,14 +1361,29 @@ object ExecutionTuiRenderer:
   ): Vector[String] =
     val panelWidth = contentWidth(width)
     val title      =
-      if model.modal.nonEmpty then "🚨 error output"
+      if model.modal.nonEmpty then "🚨 root-cause details"
+      else if model.failureOutput.nonEmpty then "🚨 error output"
+      else if model.focusedPane == TuiPane.Logs then "📜 Logs"
       else if model.dryRunLines.nonEmpty then "ℹ️ Dry-run operations / Recent Logs"
       else "ℹ️ info bar"
     val modalLines = model.modal.map(value =>
-      TuiModalRenderer.render(Some(value), panelWidth - 2)
+      TuiModalRenderer.render(
+        Some(value),
+        panelWidth - 2,
+        model.modalScroll,
+        layout.infoBodyHeight
+      )
     ).getOrElse(Vector.empty)
     val rawLines =
       if modalLines.nonEmpty then modalLines
+      else if model.focusedPane == TuiPane.Logs then
+        visibleText(
+          model.logs,
+          model.logScroll,
+          layout.infoBodyHeight
+        )
+      else if model.failureOutput.nonEmpty then
+        model.failureOutput.toVector.flatMap(value => value.title +: value.renderLines)
       else if model.dryRunLines.nonEmpty then dryRunInfoLines(model, layout.infoBodyHeight)
       else executionInfoLines(model).takeRight(layout.infoBodyHeight)
     val lines = if rawLines.isEmpty then Vector("No output yet.") else rawLines
@@ -1329,6 +1417,10 @@ object ExecutionTuiRenderer:
     val recentLogs     = model.logs.takeRight(3)
     val operationLimit = (height - recentLogs.size).max(1)
     model.dryRunLines.take(operationLimit) ++ recentLogs
+
+  private def visibleText(lines: Vector[String], offset: Int, height: Int): Vector[String] =
+    val clippedOffset = offset.max(0).min((lines.size - height).max(0))
+    lines.slice(clippedOffset, clippedOffset + height)
 
   def progressText(
       downloadedBytes: Option[Long],
@@ -1875,15 +1967,30 @@ object PlanningTuiRenderer:
   ): Vector[String] =
     val panelWidth = contentWidth(width)
     val title      = model.modal match
-      case Some(TuiModal.Help)                                   => "ℹ️ Help"
-      case Some(TuiModal.Error(_)) | Some(TuiModal.RootCause(_)) => "🚨 error output"
-      case Some(_)                                               => "ℹ️ info"
-      case None if model.focusedPane == TuiPane.Logs             => "📜 Logs"
+      case Some(TuiModal.Help)                                 => "ℹ️ Help"
+      case Some(TuiModal.Error(_))                             => "🚨 error output"
+      case Some(TuiModal.RootCause(_))                         => "🚨 root-cause details"
+      case Some(_)                                             => "ℹ️ info"
+      case None if model.focusedPane == TuiPane.Logs           => "📜 Logs"
+      case None if model.infoOutput.exists(_.failure.nonEmpty) => "🚨 error output"
+      case None if model.infoOutput.nonEmpty                   =>
+        model.infoOutput.map(output => s"ℹ️ ${output.title}").getOrElse("ℹ️ info")
+      case None if model.focusedPane == TuiPane.Details =>
+        model.detail.map(value => s"ℹ️ Details: ${value.name}").getOrElse("ℹ️ info")
       case None => model.detail.map(value => s"ℹ️ Details: ${value.name}").getOrElse("ℹ️ info")
     val rawLines = model.modal match
-      case Some(value)                               => modalInfoLines(value)
+      case Some(value) =>
+        visibleText(modalInfoLines(value), model.modalScroll, layout.infoBodyHeight)
       case None if model.focusedPane == TuiPane.Logs =>
         visibleText(model.logs, model.logScroll, layout.infoBodyHeight)
+      case None if model.infoOutput.nonEmpty =>
+        model.infoOutput.map(_.lines.take(layout.infoBodyHeight)).getOrElse(Vector.empty)
+      case None if model.focusedPane == TuiPane.Details =>
+        visibleText(
+          model.detail.map(_.lines).getOrElse(Vector("Select an entry to inspect details.")),
+          model.detailScroll,
+          layout.infoBodyHeight
+        )
       case None => visibleText(
           model.detail.map(_.lines).getOrElse(Vector("Select an entry to inspect details.")),
           model.detailScroll,

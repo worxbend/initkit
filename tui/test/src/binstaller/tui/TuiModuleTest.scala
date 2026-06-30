@@ -171,6 +171,26 @@ object TuiModuleTest extends TestSuite:
       assert(!plain.contains("q/Ctrl+C quit"))
       assert(!plain.contains("Plan ["))
 
+    test("execution logs focus scrolls with keyboard and mouse wheel"):
+      val fixture = writeFixture()
+      val logs    = Vector.tabulate(28)(index => s"execution log line ${index + 1}")
+      val state   = ExecutionTuiState
+        .initial(
+          TuiRequest(TuiMode.Apply, fixture.options),
+          ExecutionTuiSettings.fromPlanning(testSettings(height = 24))
+        )
+        .copy(logs = logs)
+        .handle(TuiInput.PageDown, TuiPane.Logs)
+        .handle(TuiInput.MouseWheelDown, TuiPane.Logs)
+      val plain = stripAnsi(
+        ExecutionTuiRenderer.render(state.toModel.copy(focusedPane = TuiPane.Logs)).mkString("\n")
+      )
+
+      assert(state.logScroll > 0)
+      assert(plain.contains("Logs"))
+      assert(plain.contains("execution log line 15"))
+      assert(!plain.contains("execution log line 4"))
+
     test("unknown-size download progress uses deterministic indeterminate frames"):
       val frameOne = ExecutionTuiRenderer.progressText(Some(512L), None, frame = 3)
       val frameTwo = ExecutionTuiRenderer.progressText(Some(512L), None, frame = 4)
@@ -567,10 +587,12 @@ object TuiModuleTest extends TestSuite:
         PlanningTuiSession.run(browsedState, Vector(TuiInput.Character('p')), actions)
       val model = previewState.toModel
       val logs  = stripAnsi(model.logs.mkString("\n"))
+      val plain = stripAnsi(PlanningTuiRenderer.render(model).mkString("\n"))
 
       assert(previewState.appState.mode == TuiBrowsingMode.PlanPreview)
       assert(previewState.focusedPane == TuiPane.Details)
       assert(model.detail.exists(_.name == "beta"))
+      assert(previewState.appState.infoOutput.exists(_.lines.exists(_.contains("1. beta"))))
       assert(model.header.filterText == "be")
       assert(previewState.appState.selectedToolNames == Set("beta"))
       assert(logs.contains("plan preview selected 1 / 2: beta"))
@@ -578,6 +600,8 @@ object TuiModuleTest extends TestSuite:
       assert(logs.contains("tools: 1"))
       assert(logs.contains("1. beta"))
       assert(!logs.contains("1. alpha"))
+      assert(plain.contains("Plan table"))
+      assert(plain.contains("1. beta"))
       assert(!Files.exists(fixture.appsDir))
       assert(!Files.exists(previewStateFile))
 
@@ -687,11 +711,12 @@ object TuiModuleTest extends TestSuite:
       assert(finalState.appState.mode == TuiBrowsingMode.DryRun)
       assert(finalState.appState.executionState.exists(_.dryRunLines.contains("dry-run ok")))
 
-    test("failed dry-run opens error modal with redacted bounded snippets and logs"):
+    test("failed dry-run renders error output first and opens redacted root cause"):
       val fixture = writeFixture()
       val secret  = "secret-token-value"
       val lines   = Vector(
         "failed beta: command: 'tar': command exited with status 2",
+        "  exit code: 2",
         "  stdout: line-1",
         "  stdout: line-2",
         "  stdout: line-3",
@@ -711,11 +736,14 @@ object TuiModuleTest extends TestSuite:
       val finalState = PlanningTuiSession.run(selected, Vector(TuiInput.Character('d')), actions)
       val rendered   = stripAnsi(TuiAppRenderer.render(finalState.appState).mkString("\n"))
       val logs       = finalState.appState.logs.mkString("\n")
+      val failure    = finalState.appState.executionState.flatMap(_.failureOutput)
 
-      assert(finalState.appState.modal.exists:
-        case TuiModal.Error(failure) => failure.category == TuiFailureCategory.DryRun &&
+      assert(finalState.appState.modal.isEmpty)
+      assert(failure.exists: failure =>
+        failure.category == TuiFailureCategory.DryRun &&
           failure.action.contains("dry-run") &&
           failure.toolName.contains("beta") &&
+          failure.exitCode.contains(2) &&
           failure.rootCause.contains("failed beta") &&
           failure.stdoutSnippet == Vector(
             "line-2",
@@ -725,17 +753,23 @@ object TuiModuleTest extends TestSuite:
             "line-6",
             "line-7"
           ) &&
-          failure.stderrSnippet.exists(_.contains("<redacted>"))
-        case _ => false)
-      assert(rendered.contains("Error: Dry run failed"))
+          failure.stderrSnippet.exists(_.contains("<redacted>")) &&
+          failure.environmentHints.exists(_.contains("modeled environment")))
+      assert(rendered.contains("Dry run failed"))
       assert(rendered.contains("category: dry-run"))
       assert(rendered.contains("action: dry-run"))
       assert(rendered.contains("tool: beta"))
+      assert(rendered.contains("exit code: 2"))
       assert(rendered.contains("suggestion: Review the dry-run root cause"))
       assert(!rendered.contains(secret))
       assert(!rendered.contains("\u001b[31m"))
       assert(!logs.contains(secret))
       assert(!logs.contains("\u001b[31m"))
+
+      val rootCause = PlanningTuiSession.run(finalState, Vector(TuiInput.Enter), actions)
+      assert(rootCause.appState.modal.exists:
+        case TuiModal.RootCause(value) => value.exitCode.contains(2)
+        case _                         => false)
 
     test("password modal explains privileged operation and masks typed input"):
       val request = SudoCredentialRequest(
@@ -887,10 +921,12 @@ object TuiModuleTest extends TestSuite:
       )
       val rendered = stripAnsi(TuiAppRenderer.render(finalState.appState).mkString("\n"))
 
-      assert(finalState.appState.modal.exists:
-        case TuiModal.Error(failure) => failure.rootCause.contains("sudo credentials canceled") &&
+      val failure = finalState.appState.executionState.flatMap(_.failureOutput)
+      assert(finalState.appState.modal.isEmpty)
+      assert(failure.exists(failure =>
+        failure.rootCause.contains("sudo credentials canceled") &&
           failure.toolName.contains("alpha")
-        case _ => false)
+      ))
       assert(rendered.contains("sudo credentials canceled"))
       assert(terminal.rendered.nonEmpty)
       assert(!commandExecutor.commands.exists(_.argv.startsWith(Vector("sudo", "-S"))))
@@ -926,10 +962,12 @@ object TuiModuleTest extends TestSuite:
       val stateText =
         if Files.exists(fixture.stateFile) then Files.readString(fixture.stateFile) else ""
 
-      assert(finalState.appState.modal.exists:
-        case TuiModal.Error(failure) => !failure.renderLines.mkString("\n").contains(password) &&
+      val failure = finalState.appState.executionState.flatMap(_.failureOutput)
+      assert(finalState.appState.modal.isEmpty)
+      assert(failure.exists(failure =>
+        !failure.renderLines.mkString("\n").contains(password) &&
           failure.renderLines.mkString("\n").contains("<redacted>")
-        case _ => false)
+      ))
       assert(!rendered.contains(password))
       assert(!logs.contains(password))
       assert(!prompt.contains(password))
@@ -1038,20 +1076,22 @@ object TuiModuleTest extends TestSuite:
         Vector(TuiInput.Character('r'), TuiInput.Enter),
         actions
       )
-      val rootCause =
-        PlanningTuiSession.run(failed, Vector(TuiInput.Escape, TuiInput.Enter), actions)
-      val rendered = stripAnsi(TuiAppRenderer.render(rootCause.appState).mkString("\n"))
+      val rootCause = PlanningTuiSession.run(failed, Vector(TuiInput.Enter), actions)
+      val rendered  = stripAnsi(TuiAppRenderer.render(rootCause.appState).mkString("\n"))
 
-      assert(failed.appState.modal.exists:
-        case TuiModal.Error(_) => true
-        case _                 => false)
+      assert(failed.appState.modal.isEmpty)
+      assert(failed.appState.executionState.exists(_.failureOutput.nonEmpty))
       assert(rootCause.appState.modal.exists:
         case TuiModal.RootCause(failure) => failure.toolName.contains("beta") &&
           failure.rootCause.contains("failed beta") &&
-          failure.stderrSnippet.contains("ln failed")
+          failure.stderrSnippet.contains("ln failed") &&
+          failure.exitCode.contains(1) &&
+          failure.duration.nonEmpty
         case _ => false)
       assert(rendered.contains("Root cause: beta"))
       assert(rendered.contains("category: apply"))
+      assert(rendered.contains("exit code: 1"))
+      assert(rendered.contains("duration:"))
       assert(rendered.contains("stderr:"))
 
     test("interactive d action replaces the planning frame with execution output"):

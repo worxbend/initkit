@@ -28,6 +28,13 @@ enum TuiModal:
   case ConfirmApply(selectedToolNames: Vector[String])
   case PasswordPrompt(prompt: TuiPasswordPromptView)
 
+/** Explicit lower-info-pane output that does not replace the table-first workspace. */
+final case class TuiInfoOutput(
+    title: String,
+    lines: Vector[String],
+    failure: Option[TuiFailure]
+)
+
 /** One TUI-local plan entry, preserving the resolved core tool without using CLI selection. */
 final case class TuiPlanEntry(index: Int, tool: ResolvedTool):
 
@@ -142,12 +149,20 @@ object TuiAppActions:
             failure,
             state.snapshot.plan.redactions
           )
-          val nextModal = failure.map(TuiModal.Error.apply).orElse(state.modal)
+          val output = actionOutput(
+            "Plan preview",
+            selectedText,
+            result.lines,
+            failure,
+            state.snapshot.plan.redactions
+          )
           state.copy(
             mode = TuiBrowsingMode.PlanPreview,
             logs = nextLogs,
             logScroll = 0,
-            modal = nextModal
+            infoOutput = Some(output),
+            modal = None,
+            modalScroll = 0
           )
 
       def dryRunApply(state: TuiAppState): TuiAppState =
@@ -186,16 +201,17 @@ object TuiAppActions:
             failure,
             state.snapshot.plan.redactions
           )
-          val nextModal = failure.map(TuiModal.Error.apply).orElse(state.modal)
           state.copy(
             mode = TuiBrowsingMode.DryRun,
             logs = nextLogs,
             logScroll = 0,
+            focus = TuiPane.Plan,
             executionState = Some(executionState.copy(logs =
               (executionState.logs :+ selectedText)
                 .takeRight(80)
             )),
-            modal = nextModal
+            modal = None,
+            modalScroll = 0
           )
 
       def requestApplyConfirmation(state: TuiAppState): TuiAppState =
@@ -244,16 +260,17 @@ object TuiAppActions:
             failure,
             state.snapshot.plan.redactions
           )
-          val nextModal = failure.map(TuiModal.Error.apply)
           state.copy(
             mode = TuiBrowsingMode.Apply,
             logs = nextLogs,
             logScroll = 0,
+            focus = TuiPane.Plan,
             executionState = Some(executionState.copy(logs =
               (executionState.logs :+ selectedText)
                 .takeRight(80)
             )),
-            modal = nextModal
+            modal = None,
+            modalScroll = 0
           )
 
   private def failureForResult(
@@ -292,6 +309,22 @@ object TuiAppActions:
       RenderSafety.displayLines(resultLines.flatMap(_.linesIterator.toVector), redactions)
     val failureLines = failure.toVector.flatMap(value => value.title +: value.renderLines)
     (logs ++ (safeSelected +: safeResult) ++ failureLines).takeRight(120)
+
+  private def actionOutput(
+      title: String,
+      selectedText: String,
+      resultLines: Vector[String],
+      failure: Option[TuiFailure],
+      redactions: binstaller.core.SensitiveValueRedactions
+  ): TuiInfoOutput = failure match
+    case Some(value) =>
+      TuiInfoOutput(s"Error: ${value.title}", value.title +: value.renderLines, Some(value))
+    case None =>
+      val lines = RenderSafety.displayLines(
+        selectedText +: resultLines.flatMap(_.linesIterator.toVector),
+        redactions
+      )
+      TuiInfoOutput(title, lines, None)
 
 /** Header fields that remain visible while browsing or executing actions in the TUI. */
 final case class TuiAppHeader(
@@ -348,6 +381,8 @@ final case class TuiAppState(
     selectedIndex: Int,
     filter: TuiAppFilter,
     modal: Option[TuiModal],
+    modalScroll: Int,
+    infoOutput: Option[TuiInfoOutput],
     logs: Vector[String],
     executionState: Option[ExecutionTuiState],
     viewport: TuiViewport,
@@ -425,6 +460,8 @@ object TuiAppState:
       selectedIndex = settings.selectedIndex,
       filter = TuiAppFilter.fromSettings(settings),
       modal = if settings.helpOpen then Some(TuiModal.Help) else None,
+      modalScroll = 0,
+      infoOutput = None,
       logs = settings.logs ++ defaultLogs(snapshot, entries.size),
       executionState = None,
       viewport = settings.viewport,
@@ -487,7 +524,7 @@ object TuiAppController:
     case TuiInput.End            => handleEnd(state)
     case TuiInput.Left           => state.copy(focus = state.focus.previous)
     case TuiInput.Right          => state.copy(focus = state.focus.next)
-    case TuiInput.Enter          => state.copy(focus = TuiPane.Details)
+    case TuiInput.Enter => openInfoFailure(state).getOrElse(state.copy(focus = TuiPane.Details))
     case TuiInput.Character('l') => state.copy(focus = TuiPane.Logs)
     case TuiInput.Character(' ') => toggleCurrentVisible(state)
     case TuiInput.Character('a') => toggleVisibleSelection(state)
@@ -513,16 +550,25 @@ object TuiAppController:
   ): TuiAppState = state.modal match
     case Some(TuiModal.ConfirmApply(_)) => input match
         case TuiInput.Enter  => actions.confirmedApply(state.copy(modal = None))
-        case TuiInput.Escape => state.copy(modal = None)
-        case TuiInput.Character('n') | TuiInput.Character('N') => state.copy(modal = None)
-        case TuiInput.Quit | TuiInput.CtrlC                    => state.copy(exitRequested = true)
-        case TuiInput.Resize(value) => clampScrolls(state.copy(viewport = value))
-        case _                      => state
+        case TuiInput.Escape => state.copy(modal = None, modalScroll = 0)
+        case TuiInput.Character('n') | TuiInput.Character('N') =>
+          state.copy(modal = None, modalScroll = 0)
+        case TuiInput.Quit | TuiInput.CtrlC => state.copy(exitRequested = true)
+        case TuiInput.Resize(value)         => clampScrolls(state.copy(viewport = value))
+        case _                              => state
     case Some(_) => input match
-        case TuiInput.Enter | TuiInput.Escape => state.copy(modal = None)
-        case TuiInput.Quit | TuiInput.CtrlC   => state.copy(exitRequested = true)
-        case TuiInput.Resize(value)           => clampScrolls(state.copy(viewport = value))
-        case _                                => state
+        case TuiInput.Enter | TuiInput.Escape        => state.copy(modal = None, modalScroll = 0)
+        case TuiInput.Up | TuiInput.MouseWheelUp     => scrollModal(state, -1)
+        case TuiInput.Down | TuiInput.MouseWheelDown => scrollModal(state, 1)
+        case TuiInput.PageUp                         =>
+          scrollModal(state, -PlanningTuiLayout.forViewport(state.viewport).infoBodyHeight)
+        case TuiInput.PageDown =>
+          scrollModal(state, PlanningTuiLayout.forViewport(state.viewport).infoBodyHeight)
+        case TuiInput.Home                  => state.copy(modalScroll = 0)
+        case TuiInput.End                   => state.copy(modalScroll = maxModalScroll(state))
+        case TuiInput.Quit | TuiInput.CtrlC => state.copy(exitRequested = true)
+        case TuiInput.Resize(value)         => clampScrolls(state.copy(viewport = value))
+        case _                              => state
     case None => handleBrowsingInput(state, input, actions)
 
   private def handleExecutionInput(state: TuiAppState, input: TuiInput): TuiAppState = input match
@@ -530,13 +576,17 @@ object TuiAppController:
         viewport = value,
         executionState = state.executionState.map(_.handle(input))
       )
+    case TuiInput.Tab =>
+      state.copy(focus = if state.focus == TuiPane.Logs then TuiPane.Plan else TuiPane.Logs)
+    case TuiInput.Character('l') => state.copy(focus = TuiPane.Logs)
     case TuiInput.Up | TuiInput.Down | TuiInput.PageUp | TuiInput.PageDown | TuiInput.Home |
-        TuiInput.End => state.copy(executionState = state.executionState.map(_.handle(input)))
+        TuiInput.End | TuiInput.MouseWheelUp | TuiInput.MouseWheelDown =>
+      state.copy(executionState = state.executionState.map(_.handle(input, state.focus)))
     case TuiInput.Enter => state.executionState
-        .flatMap(_.focusedFailure)
-        .map(failure => state.copy(modal = Some(TuiModal.RootCause(failure))))
+        .flatMap(execution => execution.focusedFailure.orElse(execution.failureOutput))
+        .map(failure => state.copy(modal = Some(TuiModal.RootCause(failure)), modalScroll = 0))
         .getOrElse(state)
-    case TuiInput.Escape                => state.copy(modal = None)
+    case TuiInput.Escape                => state.copy(modal = None, modalScroll = 0)
     case TuiInput.Quit | TuiInput.CtrlC => state.copy(exitRequested = true)
     case _                              => state
 
@@ -592,6 +642,14 @@ object TuiAppController:
     val layout = PlanningTuiLayout.forViewport(state.viewport)
     state.copy(logScroll = (state.logScroll + delta).max(0).min(maxLogScroll(state, layout)))
 
+  private def scrollModal(state: TuiAppState, delta: Int): TuiAppState =
+    state.copy(modalScroll = (state.modalScroll + delta).max(0).min(maxModalScroll(state)))
+
+  private def openInfoFailure(state: TuiAppState): Option[TuiAppState] =
+    state.infoOutput.flatMap(_.failure).map(failure =>
+      state.copy(modal = Some(TuiModal.RootCause(failure)), modalScroll = 0)
+    )
+
   private def toggleCurrentVisible(state: TuiAppState): TuiAppState = state.activeEntry match
     case Some(entry) => state.withSelection(state.selection.toggle(entry.name))
     case None        => state
@@ -626,7 +684,8 @@ object TuiAppController:
     val layout = PlanningTuiLayout.forViewport(state.viewport)
     state.copy(
       detailScroll = state.detailScroll.max(0).min(maxDetailScroll(state, layout)),
-      logScroll = state.logScroll.max(0).min(maxLogScroll(state, layout))
+      logScroll = state.logScroll.max(0).min(maxLogScroll(state, layout)),
+      modalScroll = state.modalScroll.max(0).min(maxModalScroll(state))
     )
 
   private def visibleEntryCount(state: TuiAppState): Int = state.visibleEntries.size
@@ -644,6 +703,11 @@ object TuiAppController:
 
   private def maxLogScroll(state: TuiAppState, layout: PlanningTuiLayout): Int =
     (visibleLogLines(state) - layout.logBodyHeight).max(0)
+
+  private def maxModalScroll(state: TuiAppState): Int =
+    val layout = PlanningTuiLayout.forViewport(state.viewport)
+    val lines  = state.modal.map(TuiModalRenderer.modalLines).fold(0)(_.size)
+    (lines - layout.infoBodyHeight).max(0)
 
 /** Runner helpers for pure and terminal-backed TUI app-state sessions. */
 object TuiAppRunner:
@@ -688,8 +752,10 @@ object TuiAppRenderer:
 
   /** Render execution as the primary view while an action is active or complete. */
   def render(state: TuiAppState): Vector[String] = state.executionState match
-    case Some(execution) => ExecutionTuiRenderer.render(execution.toModel.copy(modal =
-        state.modal.orElse(execution.modal)
+    case Some(execution) => ExecutionTuiRenderer.render(execution.toModel.copy(
+        focusedPane = state.focus,
+        modal = state.modal.orElse(execution.modal),
+        modalScroll = state.modalScroll
       ))
     case None => PlanningTuiRenderer.render(PlanningTuiModel.fromAppState(state))
 
