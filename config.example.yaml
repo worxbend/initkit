@@ -12,7 +12,6 @@ metadata:
 spec:
   policy:
     mode: developer
-    dryRun: false
     continueOnError: false
     appsDir: "${HOME}/.apps"
     cleanInstall: true

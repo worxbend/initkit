@@ -70,7 +70,6 @@ final case class ProfileSpec(
 /** Profile-wide execution policy decoded from `spec.policy`. */
 final case class InstallPolicy(
     mode: PolicyMode,
-    dryRun: Boolean,
     continueOnError: Boolean,
     appsDir: String,
     cleanInstall: Boolean,
@@ -329,7 +328,6 @@ private object ManifestDecoder:
       PolicyMode.Developer,
       _.value
     )
-    val dryRun          = optionalBoolean(map, "dryRun", "spec.policy.dryRun", default = false)
     val continueOnError =
       optionalBoolean(map, "continueOnError", "spec.policy.continueOnError", default = false)
     val appsDir      = requiredString(map, "spec.policy.appsDir")
@@ -372,7 +370,6 @@ private object ManifestDecoder:
     DecodeResult(
       InstallPolicy(
         mode = mode.value,
-        dryRun = dryRun.value,
         continueOnError = continueOnError.value,
         appsDir = appsDir.value,
         cleanInstall = cleanInstall.value,
@@ -384,7 +381,7 @@ private object ManifestDecoder:
         allowArchiveCandidateFallback = allowArchiveCandidateFallback.value,
         stateFile = stateFile.value
       ),
-      input.errors ++ mode.errors ++ dryRun.errors ++ continueOnError.errors ++ appsDir.errors ++
+      input.errors ++ mode.errors ++ continueOnError.errors ++ appsDir.errors ++
         cleanInstall.errors ++ requireConfirmation.errors ++ allowSudoSymlinks.errors ++
         allowDynamicLatestUrls.errors ++ allowMissingChecksums.errors ++
         allowTarXzFallback.errors ++ allowArchiveCandidateFallback.errors ++ stateFile.errors

@@ -484,24 +484,60 @@ object CoreModuleTest extends TestSuite:
       assert(!result.lines.exists(_.contains("ValidationFailed")))
       assert(!result.lines.exists(_.contains("Exception")))
 
-    test("versions output includes pinned resolved and dynamic sources with referencing tools"):
+    test("versions output includes package version summary table"):
       val service = BinaryInstallerService.resolving(FakeHttpTextClient("v1.34.0"))
       val result  = service.versions(
         applyOptions(exampleConfigPath).copy(applyConfirmation = ApplyConfirmation.Disabled)
       )
 
       assert(result.exitCode == 0)
-      assert(result.lines.exists(_.startsWith("pinned yazi: v26.5.6")))
-      assert(result.lines.exists(_.startsWith("pinned helm: v3.21.2")))
-      assert(result.lines.exists(_.startsWith("pinned kustomize: v5.8.1")))
       assert(result.lines.exists(line =>
-        line.startsWith("resolved kubectl: v1.34.0") &&
-          line.contains("(tools: kubectl; checksums: kubectl missing)")
+        line.startsWith("package") && line.endsWith("newer version")
       ))
-      assert(result.lines.exists(line =>
-        line.startsWith("dynamic minikube: dynamic latest-url") &&
-          line.contains("(tools: minikube; checksums: minikube missing)")
-      ))
+      assert(versionSummaryRowExists(result.lines, "yazi", "v26.5.6", "-"))
+      assert(versionSummaryRowExists(result.lines, "helm", "v3.21.2", "-"))
+      assert(versionSummaryRowExists(result.lines, "kustomize", "v5.8.1", "-"))
+      assert(versionSummaryRowExists(result.lines, "kubectl", "v1.34.0", "-"))
+      assert(versionSummaryRowExists(result.lines, "minikube", "dynamic latest-url", "-"))
+      assert(!result.lines.exists(_.contains("https://")))
+      assert(!result.lines.exists(_.contains("final url")))
+
+    test("versions output reports newer GitHub release for pinned downloads"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-github-latest")
+      val config   = writeConfig(tempRoot, githubReleaseYaml(tempRoot, "0.40.0"))
+      val service  = BinaryInstallerService.resolving(
+        RoutingHttpTextClient(Map(
+          "https://api.github.com/repos/jj-vcs/jj/releases/latest" -> Right(HttpTextResponse(
+            """{"tag_name":"v0.41.0"}""",
+            UrlProvenance.direct("https://api.github.com/repos/jj-vcs/jj/releases/latest")
+          ))
+        ))
+      )
+
+      val result = service.versions(applyOptions(config))
+
+      assert(result.exitCode == 0)
+      assert(versionSummaryRowExists(result.lines, "jujutsu", "0.40.0", "v0.41.0"))
+      assert(!result.lines.exists(_.contains("github:")))
+
+    test("versions output omits unavailable GitHub release metadata without failing"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-github-unavailable")
+      val config   = writeConfig(tempRoot, githubReleaseYaml(tempRoot, "0.40.0"))
+      val service  = BinaryInstallerService.resolving(
+        RoutingHttpTextClient(Map(
+          "https://api.github.com/repos/jj-vcs/jj/releases/latest" ->
+            Left(HttpTextError(
+              "https://api.github.com/repos/jj-vcs/jj/releases/latest",
+              "HTTP 403"
+            ))
+        ))
+      )
+
+      val result = service.versions(applyOptions(config))
+
+      assert(result.exitCode == 0)
+      assert(versionSummaryRowExists(result.lines, "jujutsu", "0.40.0", "-"))
+      assert(!result.lines.exists(_.contains("HTTP 403")))
 
     test("lock writes pinned http-text and dynamic source metadata without apply state"):
       val tempRoot = Files.createTempDirectory("binstaller-core-lock")
@@ -620,7 +656,8 @@ object CoreModuleTest extends TestSuite:
       assert(planResult.lines.exists(_.contains(s"checksum: sha256 $artifactHash (discovered")))
       assert(planResult.lines.exists(_.contains(checksumFileUrl)))
       assert(versionsResult.exitCode == 0)
-      assert(versionsResult.lines.exists(_.contains("checksums: alpha discovered")))
+      assert(versionSummaryRowExists(versionsResult.lines, "alpha", "1.0.0", "-"))
+      assert(!versionsResult.lines.exists(_.contains("checksums:")))
       assert(applyResult.exitCode == 0)
       assert(Files.readString(tempRoot.resolve("apps/alpha/bin/alpha")) == "alpha-binary")
       assert(lockResult.exitCode == 0)
@@ -682,8 +719,8 @@ object CoreModuleTest extends TestSuite:
       assert(output.contains(checksumFileUrl))
       assert(Files.readString(existingFile) == "existing")
 
-    test("locked dry-run validates lock and renders locked provenance without writes"):
-      val tempRoot = Files.createTempDirectory("binstaller-core-locked-dry-run")
+    test("locked plan validates lock and renders locked provenance without writes"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-locked-plan")
       val config   = writeConfig(tempRoot, lockYaml(tempRoot))
       val lockPath = tempRoot.resolve("binstaller.lock.json")
       writeLock(lockPath, currentLockFile(config, dynamicSize = Some(33L)))
@@ -691,14 +728,13 @@ object CoreModuleTest extends TestSuite:
         tempRoot,
         dynamicSize = Some(33L),
         installer = DirectBinaryInstaller(
-          FakeBinaryDownloadClient.failure("locked dry-run must not download"),
+          FakeBinaryDownloadClient.failure("locked plan must not download"),
           InstallFileSystem.nio
         )
       )
 
-      val result = service.apply(
+      val result = service.plan(
         applyOptions(config).copy(
-          dryRun = DryRunMode.Enabled,
           lockPath = lockPath.toString,
           lockedApply = LockedApplyMode.Enabled
         )
@@ -780,9 +816,8 @@ object CoreModuleTest extends TestSuite:
       writeLock(lockPath, currentLockFile(config, dynamicSize = None))
       val service = lockedApplyService(tempRoot, dynamicSize = Some(33L))
 
-      val result = service.apply(
+      val result = service.plan(
         applyOptions(config).copy(
-          dryRun = DryRunMode.Enabled,
           lockPath = lockPath.toString,
           lockedApply = LockedApplyMode.Enabled
         )
@@ -812,7 +847,7 @@ object CoreModuleTest extends TestSuite:
       assert(result.lines.exists(_.contains("is missing")))
       assert(!Files.exists(installDir))
 
-    test("non dry-run apply requires yes when policy requireConfirmation is true"):
+    test("apply requires yes when policy requireConfirmation is true"):
       val tempRoot   = Files.createTempDirectory("binstaller-core-confirm")
       val installDir = tempRoot.resolve("alpha")
       val config     = writeConfig(tempRoot, directBinaryYaml(installDir))
@@ -1567,16 +1602,13 @@ object CoreModuleTest extends TestSuite:
           Vector("alpha" -> "completed", "beta" -> "completed")
         ))
 
-    test("dry-run apply emits resolving plan-ready and summary events in order"):
-      val tempRoot = Files.createTempDirectory("binstaller-core-events-dry-run")
-      val config   = writeConfig(tempRoot, twoToolYaml(tempRoot, "dry-run.state.json"))
+    test("plan emits resolving plan-ready and summary events in order"):
+      val tempRoot = Files.createTempDirectory("binstaller-core-events-plan")
+      val config   = writeConfig(tempRoot, twoToolYaml(tempRoot, "plan.state.json"))
       val observer = RecordingInstallerEventObserver()
       val service  = statefulService(tempRoot, RoutingBinaryDownloadClient.success)
 
-      val result = service.applyWithEvents(
-        applyOptions(config).copy(dryRun = DryRunMode.Enabled),
-        observer
-      )
+      val result = service.planWithEvents(applyOptions(config), observer)
 
       assert(result.exitCode == 0)
       assert(eventIndex(observer.events, { case InstallerEvent.ResolvingStarted(_, _) => true }) <
@@ -1760,7 +1792,7 @@ object CoreModuleTest extends TestSuite:
         }
       ))
 
-    test("plan and dry-run render strict policy failures with typed suggestions"):
+    test("plan renders strict policy failures with typed suggestions"):
       val tempRoot = Files.createTempDirectory("binstaller-core-strict-policy-output")
       val config   = writeConfig(tempRoot, strictPolicyYaml())
       val service  = BinaryInstallerService.resolving(FakeHttpTextClient(""))
@@ -1771,14 +1803,12 @@ object CoreModuleTest extends TestSuite:
         resetState = ResetState.Disabled,
         verboseOutput = VerboseOutput.Disabled
       ))
-      val dryRunResult = service.apply(applyOptions(config).copy(dryRun = DryRunMode.Enabled))
 
       assert(planResult.exitCode == 1)
-      assert(dryRunResult.exitCode == 1)
       assert(planResult.lines.exists(_.contains("strict-policy[missing-checksum]")))
       assert(planResult.lines.exists(_.contains("suggestion[missing-checksum]")))
-      assert(dryRunResult.lines.exists(_.contains("strict-policy[tar-xz-fallback]")))
-      assert(dryRunResult.lines.exists(_.contains("suggestion[tar-xz-fallback]")))
+      assert(planResult.lines.exists(_.contains("strict-policy[tar-xz-fallback]")))
+      assert(planResult.lines.exists(_.contains("suggestion[tar-xz-fallback]")))
 
   private def resolve(
       yaml: String,
@@ -1826,6 +1856,17 @@ object CoreModuleTest extends TestSuite:
     case Left(error) => abort(s"expected install success, got $error")
 
   private def errorAt(path: String)(error: ValidationError): Boolean = error.path == path
+
+  private def versionSummaryRowExists(
+      lines: Vector[String],
+      packageName: String,
+      version: String,
+      newerVersion: String
+  ): Boolean = lines.exists(line =>
+    line.startsWith(packageName) &&
+      line.contains(version) &&
+      line.endsWith(newerVersion)
+  )
 
   private def eventIndex(
       events: Vector[InstallerEvent],
@@ -2390,6 +2431,39 @@ object CoreModuleTest extends TestSuite:
        |          filename: gamma
        |        executables:
        |          - path: bin/gamma
+       |""".stripMargin
+
+  private def githubReleaseYaml(tempRoot: Path, version: String): String =
+    val appsDir = tempRoot.resolve("apps")
+    s"""
+       |apiVersion: binstaller.io/v1alpha1
+       |kind: BinaryDistributionProfile
+       |metadata:
+       |  name: github-latest
+       |spec:
+       |  policy:
+       |    appsDir: "$appsDir"
+       |  vars:
+       |    muslTarget: x86_64-unknown-linux-musl
+       |  versions:
+       |    jujutsu: "$version"
+       |  plan:
+       |    - name: jujutsu
+       |      kind: binary-tool
+       |      spec:
+       |        versionRef: jujutsu
+       |        installDir: "$appsDir/jj"
+       |        download:
+       |          url: "https://github.com/jj-vcs/jj/releases/download/v$version/jj-v$version-$${muslTarget}.tar.gz"
+       |          filename: jj.tar.gz
+       |          archive:
+       |            type: tar.gz
+       |            extract:
+       |              files:
+       |                - from: jj
+       |                  to: bin/jj
+       |        executables:
+       |          - path: bin/jj
        |""".stripMargin
 
   private def checksumDiscoveryYaml(tempRoot: Path, checksumFileUrl: String): String =

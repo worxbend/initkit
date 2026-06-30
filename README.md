@@ -6,16 +6,17 @@
 ![GraalVM](https://img.shields.io/badge/GraalVM-native%20ready-f2a900?logo=graalvm&logoColor=111111)
 ![Linux](https://img.shields.io/badge/Linux-amd64%20binary%20installer-2ea44f?logo=linux&logoColor=white)
 
-`binstaller` installs Linux amd64 binary tool distributions from one YAML
-profile. It resolves versions, previews what will be downloaded and unpacked,
-then installs selected tools under a user-controlled apps directory such as
-`${HOME}/.apps`.
+`binstaller` is a command-line installer for Linux amd64 binary tool
+distributions described by one YAML profile. It resolves versions, previews
+what will be downloaded and unpacked, then installs selected tools under a
+user-controlled apps directory such as `${HOME}/.apps`.
 
-The supported scope is deliberately narrow: direct binary downloads, `zip`,
-`tar.gz`, and `tar.xz` archives, executable checks, local symlinks, optional
-sudo symlinks, dry-run previews, apply state/resume, CLI progress, and version
-reporting. It is not a package manager, dotfiles runner, installer-script host,
-broad shell-command runner, or multi-OS workstation provisioner.
+The supported scope is deliberately narrow: command-line plan/apply workflows,
+direct binary downloads, `zip`, `tar.gz`, and `tar.xz` archives, executable
+checks, local symlinks, optional sudo symlinks, plan previews, apply
+state/resume, CLI progress, and version reporting. It is not a package manager,
+dotfiles runner, installer-script host, broad shell-command runner, or multi-OS
+workstation provisioner.
 
 ## Install
 
@@ -50,12 +51,6 @@ Preview the resolved plan:
 binstaller plan --config config.example.yaml
 ```
 
-Render the apply operations without changing files:
-
-```bash
-binstaller apply --config config.example.yaml --dry-run
-```
-
 Apply the profile. `--yes` is required when the profile has
 `requireConfirmation: true`.
 
@@ -67,10 +62,12 @@ Select or omit tools by name. These flags may be repeated.
 
 ```bash
 binstaller plan --config config.example.yaml --only yazi
-binstaller apply --config config.example.yaml --skip neovim --dry-run
+binstaller apply --config config.example.yaml --skip neovim --yes
 ```
 
-Inspect pinned, resolved, and dynamic version sources:
+Print a package/version summary table. For tools downloaded from GitHub
+Releases, this also checks the repository's latest release tag and prints the
+newer version when an update is available.
 
 ```bash
 binstaller versions --config config.example.yaml
@@ -79,7 +76,7 @@ binstaller versions --config config.example.yaml
 Write a reproducible lock file without installing tools:
 
 ```bash
-binstaller lock --config config.example.yaml --output binstaller.lock.json
+binstaller lock --config config.example.yaml --output /tmp/binstaller.lock.json
 ```
 
 The manifest policy defaults to `mode: developer`, which preserves local
@@ -92,19 +89,21 @@ Source-development equivalents use the checked-in Mill launcher:
 ```bash
 ./mill app.run --help
 ./mill app.run plan --config config.example.yaml
-./mill app.run apply --config config.example.yaml --dry-run
+./mill app.run apply --config config.example.yaml --yes
 ./mill app.run versions --config config.example.yaml
-./mill app.run lock --config config.example.yaml --output binstaller.lock.json
+./mill app.run lock --config config.example.yaml --output /tmp/binstaller.lock.json
 ```
 
 ## CLI Surface
 
 Top-level commands:
 
-- `plan`: render the binary installer plan without changing files.
-- `apply`: run the installer, or render operations with `--dry-run`.
-- `versions`: resolve and print manifest version sources.
-- `lock`: resolve and write a JSON lock file without installing tools.
+| Command | Purpose | Writes files |
+|---|---|---|
+| `plan` | Render the resolved install plan. | No |
+| `apply --yes` | Download, stage, install, symlink, and save state. | Yes |
+| `versions` | Print package versions and available GitHub release updates. | No |
+| `lock` | Resolve and write a JSON lock file. | Lock file only |
 
 Useful shared options:
 
@@ -119,10 +118,8 @@ Useful shared options:
 
 `apply` also accepts:
 
-- `--dry-run`: render concrete apply operations without downloads, install
-  writes, symlink writes, or state writes.
-- `--yes`: confirm non-dry-run apply actions, including sudo symlinks.
-- `--locked`: require a compatible JSON lock file before rendering or applying.
+- `--yes`: confirm apply actions, including sudo symlinks.
+- `--locked`: require a compatible JSON lock file before applying.
 - `--lock-file FILE`: path to the JSON lock file used by `--locked`.
 
 `lock` also accepts:
@@ -132,20 +129,20 @@ Useful shared options:
 
 Exit codes:
 
-- `0`: command completed successfully, including help and dry-run commands.
+- `0`: command completed successfully, including help and plan commands.
 - `1`: manifest loading or resolution failed, selection was invalid,
   confirmation was missing, apply failed, or state persistence failed.
 - `2`: command-line usage error, including a missing required `--config`.
 
 ## State And Resume
 
-Non-dry-run `apply` writes state after each terminal tool result. State is tied
-to the profile name and manifest fingerprint, so a later apply can skip tools
-already completed for the same profile.
+`apply` writes state after each per-tool result. State is tied to the profile
+name and manifest fingerprint, so a later apply can skip tools already completed
+for the same profile.
 
 The state path comes from `--state` or `spec.policy.stateFile`. Current apply
 state paths are current-directory filenames only; absolute, nested, and empty
-paths are rejected. `plan` and `apply --dry-run` do not touch state.
+paths are rejected. `plan` does not touch state.
 
 Use `--reset-state` when you intentionally want to ignore compatible saved
 state and retry from the beginning.

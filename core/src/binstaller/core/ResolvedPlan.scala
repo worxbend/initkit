@@ -52,7 +52,7 @@ final case class ResolvedPolicy(
 enum PolicyAllowance:
   case Allowed, Rejected
 
-/** Whether non-dry-run apply requires explicit confirmation. */
+/** Whether apply requires explicit confirmation. */
 enum RequireConfirmation:
   case Enabled, Disabled
 

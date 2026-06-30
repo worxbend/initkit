@@ -103,7 +103,7 @@ Sudo is available only for symlink creation. It requires all of the following:
 
 - The manifest declares `policy.allowSudoSymlinks: true`.
 - The symlink entry sets `sudo: true`.
-- Non-dry-run apply is confirmed with CLI `--yes`.
+- Apply is confirmed with CLI `--yes`.
 - The sudo symlink destination path is absolute.
 
 Ordinary downloads, archive extraction, executable checks, local symlinks, and
@@ -116,8 +116,9 @@ The privileged-command flow is:
    `sudo -n ln -sfn <target> <path>` argv and does not request a password.
 3. If the cache probe fails, core asks an injected `SudoCredentialProvider` for
    one password for that privileged operation.
-4. CLI uses the unavailable provider unless a caller injects its own credential
-   boundary.
+4. CLI production runs request a password from the interactive terminal when a
+   cached sudo credential is unavailable. Non-interactive runs fail closed with
+   an unavailable-credentials diagnostic.
 5. The password-backed command uses fixed `sudo -S -p "" ln -sfn <target>
    <path>` argv plus secret stdin.
 
@@ -129,9 +130,8 @@ tools continue.
 ## Selection And Confirmation
 
 CLI selection uses `--only` and `--skip`. The selected names are converted to
-core `ToolSelection` before plan rendering, dry-run apply, lock generation, or
-real apply. Dry-run uses the core dry-run path, so it must not download, replace
-installs, create symlinks, or write state.
+core `ToolSelection` before plan rendering, lock generation, or apply. Plan
+must not download, replace installs, create symlinks, or write state.
 
 Real apply requires `--yes` when the manifest policy has
 `requireConfirmation: true`. Without confirmation, core apply fails before
@@ -140,14 +140,14 @@ downloads, install replacement, symlinks, or state writes.
 ## State-File Policy
 
 Apply state records schema version, profile name, manifest fingerprint, and
-terminal per-tool status. It is used for resume only.
+per-tool status. It is used for resume only.
 
 Current rules:
 
 - The state path comes from `--state` or `spec.policy.stateFile`.
-- Non-dry-run apply accepts only a current-directory filename.
+- Apply accepts only a current-directory filename.
 - Absolute paths, nested relative paths, and empty names are rejected.
-- Plan and dry-run apply do not validate or touch the state file.
+- Plan does not validate or touch the state file.
 - State is written after terminal tool results through a same-directory temp
   file and atomic move.
 - Incompatible profile names or manifest fingerprints fail unless
@@ -170,9 +170,9 @@ command diagnostics, installer events, or apply state.
 
 Terminal-control scrubbing is also display-only. Untrusted text is collapsed
 into safe terminal lines before rendering so config values, resolver output,
-download diagnostics, command stdout/stderr snippets, and modal details cannot
-inject cursor movement, alternate-screen toggles, color resets, or mouse-mode
-escape sequences into CLI output.
+download diagnostics, and command stdout/stderr snippets cannot inject cursor
+movement, alternate-screen toggles, color resets, or mouse-mode escape sequences
+into CLI output.
 
 ## Remaining Risks
 
@@ -180,7 +180,7 @@ escape sequences into CLI output.
   chunk boundaries.
 - Missing checksums are still accepted by developer-mode profiles.
 - ZIP external attributes and native `tar.xz` pre-inspection remain deferred.
-- Password-prompt cancellation is scoped to the credential request/current
+- Credential-provider cancellation is scoped to the credential request/current
   privileged operation. It is not a general cancellation mechanism for an
   already-running download, extraction, or command.
 - Native image validation is environment-bound when `native-image` is not

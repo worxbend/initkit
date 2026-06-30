@@ -60,7 +60,7 @@ private[core] object SymlinkInstaller:
     case AllowSudoSymlinks.Enabled  =>
       val path = Path.of(symlink.path)
       // Privileged writes must name an absolute destination. Relative sudo paths would depend on
-      // process cwd and make dry-run output misleading.
+      // process cwd and make plan output misleading.
       if !path.isAbsolute then
         Left(
           ToolInstallError.SymlinkFailed(

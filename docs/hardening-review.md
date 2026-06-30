@@ -3,7 +3,7 @@
 Date: 2026-06-29
 
 Scope: post-implementation review of config parsing, version resolution, downloads,
-archive extraction, symlink creation, state writes, dry-run fidelity, CLI
+archive extraction, symlink creation, state writes, plan fidelity, CLI
 reporting, tests, and release workflow.
 
 ## Findings And Recommendations
@@ -40,8 +40,8 @@ reporting, tests, and release workflow.
   as `not configured`, but absence is still accepted.
 - Add max download size enforcement and optional content-length checks before
   buffering downloads into memory.
-- Add redirect provenance to plan/versions output, including the final effective
-  URL where the JDK client exposes it.
+- Add redirect provenance to plan/apply/lock output, including the final
+  effective URL where the JDK client exposes it.
 - Add retry policy for transient HTTP failures, keeping retries off for scripts
   unless idempotence is modeled.
 - Add native `tar.xz` handling or a stronger extraction sandbox; the current tar
@@ -70,7 +70,7 @@ reporting, tests, and release workflow.
   process boundaries are sudo symlinks and the temporary `tar` fallback for
   `tar.xz`.
 - Are command args preserved as argv? Yes for sudo symlinks and `tar.xz`;
-  dry-run now quotes args for display and failure output quotes argv elements.
+  plan now quotes args for display and failure output quotes argv elements.
 - Can archives write outside staging? Native zip and tar.gz paths validate
   member names and mapped targets before writing. The `tar.xz` fallback extracts
   to private staging and copies only validated mapped files, but native
@@ -120,12 +120,12 @@ reporting, tests, and release workflow.
 - Are error messages actionable without exposing secrets? Validation and apply
   failures include paths/actions. Some filesystem and process errors still
   include paths by design.
-- Are dry-run and apply close enough? Plan/apply dry-run share resolution,
-  selection, and rendering. Apply has extra preflight and executor phases.
+- Are plan and apply close enough? Plan and apply share resolution and
+  selection. Apply has extra preflight and executor phases.
   Native `tar.xz` inspection is the main remaining divergence.
 - Do tests cover real failure modes? Tests cover invalid manifests, URL scheme,
   archive traversal, shell metacharacters as text, unsafe symlink policy, checksum
-  mismatch, timeout, stale state, continue-on-error, and dry-run
+  mismatch, timeout, stale state, continue-on-error, and plan
   no-write behavior. More archive metadata and native-release tests are still
   recommended.
 - Is the manifest understandable after all tools? The manifest remains one

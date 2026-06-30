@@ -68,7 +68,7 @@ jobs:
           chmod +x dist/binstaller-linux-amd64
           ./dist/binstaller-linux-amd64 --help
           ./dist/binstaller-linux-amd64 plan --config config.example.yaml
-          ./dist/binstaller-linux-amd64 apply --config config.example.yaml --dry-run
+          ./dist/binstaller-linux-amd64 versions --config config.example.yaml
           tar -C dist -czf dist/binstaller-linux-amd64.tar.gz binstaller-linux-amd64
           sha256sum dist/binstaller-linux-amd64 dist/binstaller-linux-amd64.tar.gz > dist/SHA256SUMS
 

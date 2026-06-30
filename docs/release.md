@@ -27,7 +27,7 @@ The GitHub Actions job:
 5. Runs `./mill __.test`.
 6. Builds `./mill app.nativeImage`.
 7. Copies the native executable to `dist/binstaller-linux-amd64`.
-8. Smokes native `--help`, `plan`, and `apply --dry-run`.
+8. Smokes native `--help`, `plan`, and `versions`.
 9. Creates `binstaller-linux-amd64.tar.gz`.
 10. Writes `SHA256SUMS`.
 11. Publishes the GitHub Release assets.
@@ -44,9 +44,8 @@ Before tagging, run:
 ./mill __.test
 ./mill app.run --help
 ./mill app.run plan --config config.example.yaml
-./mill app.run apply --config config.example.yaml --dry-run
 ./mill app.run versions --config config.example.yaml
-./mill app.run lock --help
+./mill app.run lock --config config.example.yaml --output /tmp/binstaller.lock.json
 ./mill mill.scalalib.scalafmt/checkFormatAll
 git diff --check
 jq empty .agent-loop/tasks.json
@@ -61,8 +60,8 @@ GRAALVM_HOME=/path/to/graalvm ./mill app.nativeImage
 native_path="$(find out/app/nativeImage.dest -maxdepth 1 -type f -name native-executable -print -quit)"
 "$native_path" --help
 "$native_path" plan --config config.example.yaml
-"$native_path" apply --config config.example.yaml --dry-run
 "$native_path" versions --config config.example.yaml
+"$native_path" lock --config config.example.yaml --output /tmp/binstaller.lock.json
 ```
 
 If local native image is blocked, record `command -v native-image` and
@@ -82,13 +81,13 @@ sha256sum --check --ignore-missing dist/SHA256SUMS
 chmod +x dist/binstaller-linux-amd64
 ./dist/binstaller-linux-amd64 --help
 ./dist/binstaller-linux-amd64 plan --config config.example.yaml
-./dist/binstaller-linux-amd64 apply --config config.example.yaml --dry-run
 ./dist/binstaller-linux-amd64 versions --config config.example.yaml
+./dist/binstaller-linux-amd64 lock --config config.example.yaml --output /tmp/binstaller.lock.json
 ```
 
-Do not run non-dry-run apply against a real profile during release smoke unless
-the profile uses an isolated temporary `appsDir`, a disposable current-directory
-state filename, and `--yes` is intentional.
+Do not run apply against a real profile during release smoke unless the profile
+uses an isolated temporary `appsDir`, a disposable current-directory state
+filename, and `--yes` is intentional.
 
 ## Rollback Notes
 

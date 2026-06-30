@@ -29,9 +29,8 @@ App smokes:
 ```bash
 ./mill app.run --help
 ./mill app.run plan --config config.example.yaml
-./mill app.run apply --config config.example.yaml --dry-run
 ./mill app.run versions --config config.example.yaml
-./mill app.run lock --help
+./mill app.run lock --config config.example.yaml --output /tmp/binstaller.lock.json
 ```
 
 Use `./mill mill.scalalib.scalafmt/reformatAll` to repair formatting.
@@ -54,6 +53,8 @@ Core and CLI tests avoid live downloads by injecting `BinaryDownloadClient` and
 `HttpTextClient` implementations:
 
 - A fake text client returns a pinned resolver value for `http-text` versions.
+- Routing text clients also cover GitHub latest-release metadata used by
+  `versions` for release-download URLs.
 - A fake binary client returns bytes or a typed `BinaryDownloadError`.
 - Progress tests override `download(url, observer)` and emit started,
   advanced, and finished events before returning bytes.
@@ -87,7 +88,7 @@ private def stripAnsi(output: String): String =
   output.replaceAll("\u001b\\[[;\\d]*m", "")
 ```
 
-Use plain-output assertions for text, table content, and progress summaries.
+Use plain-output assertions for text, command content, and progress summaries.
 Keep at least one assertion proving colored output is present when color itself
 is part of the behavior.
 
@@ -97,8 +98,8 @@ of the behavior.
 
 ## No-Write And State Assertions
 
-Plan and dry-run tests should use temporary `appsDir` and state paths, then
-assert those paths were not created.
+Plan tests should use temporary `appsDir` and state paths, then assert those
+paths were not created.
 
 Stateful apply tests should use current-directory state filenames under a
 temporary working directory. Assert completed tools are skipped, failed tools

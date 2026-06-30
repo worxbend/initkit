@@ -6,7 +6,6 @@ import binstaller.core.BinaryDownloadError
 import binstaller.core.BinaryDownloadProgress
 import binstaller.core.BinaryDownloadProgressObserver
 import binstaller.core.DirectBinaryInstaller
-import binstaller.core.DryRunMode
 import binstaller.core.HttpTextClient
 import binstaller.core.HttpTextError
 import binstaller.core.HttpTextResponse
@@ -39,6 +38,15 @@ object CliModuleTest extends TestSuite:
       assert(result.exitCode == 0)
       assert(result.out.contains("binstaller"))
       assert(result.out.contains("binary installer"))
+
+    test("help renders a styled binstaller logo"):
+      val result = runCli(Vector("--help"))
+      val plain  = stripAnsi(result.out)
+
+      assert(result.exitCode == 0)
+      assert(plain.contains("| |__ (_)_ __  ___| |_ __ _| | | ___ _ __"))
+      assert(plain.contains("binary installer"))
+      assert(result.out.contains("\u001b["))
 
     test("help lists supported commands"):
       val result = runCli(Vector("--help"))
@@ -116,7 +124,6 @@ object CliModuleTest extends TestSuite:
           "apply",
           "--config",
           "profile.yaml",
-          "--dry-run",
           "--locked",
           "--lock-file",
           "custom.lock.json"
@@ -125,9 +132,26 @@ object CliModuleTest extends TestSuite:
       )
 
       assert(result.exitCode == 0)
-      assert(service.applyOptions.exists(_.dryRun == DryRunMode.Enabled))
       assert(service.applyOptions.exists(_.lockedApply == LockedApplyMode.Enabled))
       assert(service.applyOptions.exists(_.lockPath == "custom.lock.json"))
+
+    test("plan forwards locked options"):
+      val service = RecordingInstallerService()
+      val result  = runCli(
+        Vector(
+          "plan",
+          "--config",
+          "profile.yaml",
+          "--locked",
+          "--lock-file",
+          "custom.lock.json"
+        ),
+        service
+      )
+
+      assert(result.exitCode == 0)
+      assert(service.planOptions.exists(_.lockedApply == LockedApplyMode.Enabled))
+      assert(service.planOptions.exists(_.lockPath == "custom.lock.json"))
 
     test("lock forwards output path and selection"):
       val service = RecordingInstallerService()
@@ -177,9 +201,9 @@ object CliModuleTest extends TestSuite:
       assert(result.exitCode == 0)
       assert(renderedToolNames(result.out) == exampleToolNames.filterNot(_ == "neovim"))
 
-    test("apply dry-run renders every sudo symlink command and marks sudo risk"):
+    test("plan renders every sudo symlink command and marks sudo risk"):
       val result = runCli(
-        Vector("apply", "--dry-run", "--config", configExamplePath.toString, "--only", "neovim"),
+        Vector("plan", "--config", configExamplePath.toString, "--only", "neovim"),
         resolvingService
       )
 
@@ -187,7 +211,7 @@ object CliModuleTest extends TestSuite:
       assert(result.out.contains("sudo risk: YES"))
       assert(result.out.linesIterator.count(_.contains("sudo ln -sfn")) == 5)
 
-    test("versions output shows final URL provenance for redirected resolvers"):
+    test("versions output shows package summary without URL provenance"):
       val service = BinaryInstallerService.resolving(
         RedirectingHttpTextClient(
           "v1.34.0",
@@ -206,22 +230,21 @@ object CliModuleTest extends TestSuite:
       val result = runCli(Vector("versions", "--config", configExamplePath.toString), service)
 
       assert(result.exitCode == 0)
-      assert(result.out.contains(
-        "resolved kubectl: v1.34.0 from https://dl.k8s.io/release/stable.txt " +
-          "(final url: https://cdn.example.invalid/kubernetes/stable.txt;"
-      ))
-      assert(result.out.contains(
-        "redirects: 302 https://dl.k8s.io/release/stable.txt -> " +
-          "https://cdn.example.invalid/kubernetes/stable.txt"
-      ))
+      assert(result.out.contains("package"))
+      assert(result.out.contains("newer version"))
+      assert(result.out.contains("kubectl"))
+      assert(result.out.contains("v1.34.0"))
+      assert(!result.out.contains("https://dl.k8s.io/release/stable.txt"))
+      assert(!result.out.contains("https://cdn.example.invalid/kubernetes/stable.txt"))
+      assert(!result.out.contains("final url"))
 
-    test("apply dry-run renders local and sudo symlink actions without executing them"):
+    test("plan renders local and sudo symlink actions without executing them"):
       val tempRoot = Files.createTempDirectory("binstaller-cli-dry-symlinks")
       val appsDir  = tempRoot.resolve("apps")
       val config   = writeConfig(tempRoot, noWriteYaml(appsDir, "state.json"))
 
       val result = runCli(
-        Vector("apply", "--dry-run", "--config", config.toString),
+        Vector("plan", "--config", config.toString),
         resolvingService
       )
 
@@ -230,26 +253,21 @@ object CliModuleTest extends TestSuite:
       assert(result.out.contains("[sudo risk] sudo ln -sfn"))
       assert(!Files.exists(appsDir))
 
-    test("plan and apply dry-run do not create install or state paths"):
+    test("plan does not create install or state paths"):
       val tempRoot  = Files.createTempDirectory("binstaller-cli-test")
       val appsDir   = tempRoot.resolve("apps")
       val stateFile = tempRoot.resolve("state.json")
       val config    = writeConfig(tempRoot, noWriteYaml(appsDir, stateFile.getFileName.toString))
       val service   = resolvingServiceWithStateRoot(tempRoot)
 
-      val planResult   = runCli(Vector("plan", "--config", config.toString), service)
-      val dryRunResult = runCli(
-        Vector("apply", "--dry-run", "--config", config.toString),
-        service
-      )
+      val planResult = runCli(Vector("plan", "--config", config.toString), service)
 
       assert(planResult.exitCode == 0)
-      assert(dryRunResult.exitCode == 0)
       assert(!Files.exists(appsDir))
       assert(!Files.exists(stateFile))
       assert(!Files.exists(appsDir.resolve("alpha")))
 
-    test("non dry-run apply requires yes when confirmation policy is enabled"):
+    test("apply requires yes when confirmation policy is enabled"):
       val tempRoot = Files.createTempDirectory("binstaller-cli-confirm")
       val appsDir  = tempRoot.resolve("apps")
       val config   = writeConfig(tempRoot, noWriteYaml(appsDir, "state.json"))

@@ -2,7 +2,7 @@ package binstaller.core
 
 import java.nio.file.Path
 
-/** Whether apply should require a compatible lock file before rendering or installing. */
+/** Whether plan or apply should require a compatible lock file. */
 enum LockedApplyMode:
   case Enabled, Disabled
 
@@ -11,7 +11,7 @@ object LockedApplyMode:
   /** Convert a boolean CLI flag into [[LockedApplyMode]]. */
   def fromFlag(value: Boolean): LockedApplyMode = if value then Enabled else Disabled
 
-/** Validated lock metadata visible to dry-run renderers. */
+/** Validated lock metadata visible to plan renderers. */
 final case class LockedApplyProvenance(path: Path, tools: Map[String, LockFileTool])
 
 /** Expected locked-apply gate failure. */

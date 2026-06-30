@@ -1,6 +1,6 @@
 # Manifest Reference
 
-Date: 2026-06-29
+Date: 2026-06-30
 
 Supported identity:
 
@@ -50,12 +50,12 @@ the default render and apply order.
 - `appsDir`: root directory that resolved install directories must stay under.
 - `continueOnError`: when `true`, apply continues after a failed tool and still
   exits nonzero if any tool failed.
-- `requireConfirmation`: when `true`, non-dry-run apply requires `--yes`.
+- `requireConfirmation`: when `true`, apply requires `--yes`.
 - `allowSudoSymlinks`: must be `true` before any plan entry may declare
   `sudo: true` symlinks.
 - `stateFile`: optional current-directory filename used by apply resume.
-- `dryRun` and `cleanInstall` are decoded for compatibility with the profile
-  shape; command-line `apply --dry-run` controls dry-run execution.
+- `cleanInstall` is decoded for compatibility with the profile shape and is not
+  a command control.
 
 Developer mode preserves the historical behavior for local tooling profiles:
 dynamic latest URLs, missing checksums, and the system `tar.xz` fallback are
@@ -81,8 +81,8 @@ policy:
   allowArchiveCandidateFallback: true
 ```
 
-State files are not written by `plan` or `apply --dry-run`. Non-dry-run apply
-rejects absolute, nested, or empty state paths.
+State files are not written by `plan`. Apply rejects absolute, nested, or empty
+state paths.
 
 ## Variables And Versions
 
@@ -115,6 +115,10 @@ versions:
   version.
 - `dynamic.type: latest-url` intentionally keeps the version displayed as
   `dynamic latest-url`.
+- `versions` detects GitHub release download URLs such as
+  `https://github.com/jj-vcs/jj/releases/download/v${version}/...`, queries the
+  repository's latest release tag, and prints the newer version in the package
+  summary table when an update is available.
 
 ## Direct Binary
 
@@ -228,8 +232,7 @@ symlinks:
     target: bin/lazygit
 ```
 
-Sudo symlinks require `policy.allowSudoSymlinks: true` and non-dry-run
-`apply --yes`:
+Sudo symlinks require `policy.allowSudoSymlinks: true` and `apply --yes`:
 
 ```yaml
 symlinks:
@@ -247,7 +250,7 @@ Selection is a command option, not a manifest field.
 
 ```bash
 binstaller plan --config config.example.yaml --only yazi
-binstaller apply --config config.example.yaml --skip neovim --dry-run
+binstaller apply --config config.example.yaml --skip neovim --yes
 ```
 
 `--only` and `--skip` may be repeated. `--only` is applied first, `--skip` is

@@ -12,7 +12,7 @@ core -> config
 ```
 
 `core` does not import CLI code. Business rules live below the command layer,
-and CLI output consumes resolved plans or renderer-agnostic events.
+and command output consumes resolved plans or renderer-agnostic events.
 
 ## Module Responsibilities
 
@@ -24,7 +24,8 @@ and CLI output consumes resolved plans or renderer-agnostic events.
 - `core`: resolves variables and versions, validates HTTPS URLs, applies
   `--only`/`--skip` selection, creates resolved plans, downloads bounded binary
   bodies, verifies checksums, extracts archives, stages and replaces installs,
-  creates symlinks, persists apply state, and emits typed installer events.
+  creates symlinks, persists apply state, emits typed installer events, and
+  stays independent from command parsing.
 - `cli`: owns Picocli command parsing, exit codes, script-friendly default
   output, colored apply progress, global flags, and routing for `plan`,
   `apply`, `versions`, and `lock`.
@@ -43,14 +44,21 @@ and CLI output consumes resolved plans or renderer-agnostic events.
 4. `ToolSelection` applies `--only` first and `--skip` second while preserving
    manifest order.
 5. `plan` renders the selected `ResolvedPlan` directly as script-friendly text.
-6. `apply --dry-run` uses the same resolution and selection path, then renders
-   concrete operations without downloads, install writes, symlink writes, or
-   state writes.
-7. Non-dry-run `apply` checks confirmation and state compatibility, executes
+6. `apply` checks confirmation and state compatibility, executes
    each selected tool, writes apply state after terminal tool results, and emits
    `InstallerEvent` values.
-8. CLI apply progress consumes the event contract to keep a compact progress
+7. CLI apply progress consumes the event contract to keep a compact progress
    line and summary without changing core execution behavior.
+
+## Command Surface
+
+The supported executable surface is intentionally small:
+
+- `plan`: resolve and render the selected plan without writing.
+- `apply --yes`: perform a confirmed apply when policy requires confirmation.
+- `versions`: print a package/version summary table and show newer GitHub
+  release versions when available.
+- `lock`: resolve and write reproducible lock metadata.
 
 ## Event Contract
 
@@ -72,9 +80,10 @@ Current phases are `Resolving`, `Planning`, `LoadingState`, `Downloading`,
 
 ## Invariants
 
-- `plan`, `apply`, `apply --dry-run`, and `versions` output remains
-  script-friendly.
-- Dry-run paths do not touch install directories or state files.
+- `plan`, `apply`, and `versions` output remains script-friendly.
+- GitHub latest-release lookup failures do not turn version reporting into a
+  failed command.
+- `plan` does not touch install directories or state files.
 - Apply state is filename-only in the current working directory.
 - Manifest installer scripts are unsupported and rejected during config loading.
 - Display surfaces use render safety and redaction at renderer boundaries while

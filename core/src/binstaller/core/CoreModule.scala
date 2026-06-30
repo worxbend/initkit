@@ -5,12 +5,10 @@ import binstaller.config.BinaryDistributionProfile
 import binstaller.config.BinaryToolSpec
 import binstaller.config.ConfigModule
 import binstaller.config.DownloadSpec
-import binstaller.config.DynamicVersionKind
 import binstaller.config.ExtractMapping
 import binstaller.config.PlanEntry
 import binstaller.config.PolicyOverride
 import binstaller.config.SymlinkPrivilege
-import binstaller.config.VersionResolverKind
 import binstaller.config.VersionSource
 
 import java.nio.charset.StandardCharsets
@@ -49,7 +47,6 @@ final case class InstallerOptions(
     resetState: ResetState,
     verboseOutput: VerboseOutput,
     selection: ToolSelection = ToolSelection.all,
-    dryRun: DryRunMode = DryRunMode.Disabled,
     applyConfirmation: ApplyConfirmation = ApplyConfirmation.Disabled,
     lockPath: String = LockOptions.defaultOutputPath,
     lockedApply: LockedApplyMode = LockedApplyMode.Disabled
@@ -66,16 +63,7 @@ object ToolSelection:
   /** Select every resolved tool. */
   def all: ToolSelection = ToolSelection(Vector.empty, Vector.empty)
 
-/** Whether apply should render planned operations instead of changing files. */
-enum DryRunMode:
-  case Enabled, Disabled
-
-/** Helpers for converting CLI flags into dry-run mode. */
-object DryRunMode:
-  /** Convert a boolean CLI flag into [[DryRunMode]]. */
-  def fromFlag(value: Boolean): DryRunMode = if value then Enabled else Disabled
-
-/** Whether the user confirmed non-dry-run apply side effects. */
+/** Whether the user confirmed apply side effects. */
 enum ApplyConfirmation:
   case Enabled, Disabled
 
@@ -130,6 +118,13 @@ object BinaryInstallerService:
   /** Create the production resolving service with the default installer and cwd state store. */
   def resolving(httpTextClient: HttpTextClient): BinaryInstallerService =
     resolving(httpTextClient, DirectBinaryInstaller.default)
+
+  /** Create the production resolving service with explicit sudo credential handling. */
+  def resolving(
+      httpTextClient: HttpTextClient,
+      sudoCredentials: SudoCredentialProvider
+  ): BinaryInstallerService =
+    resolving(httpTextClient, DirectBinaryInstaller.default(sudoCredentials))
 
   /** Create a resolving service with an injected installer and the default cwd state store. */
   def resolving(
@@ -606,11 +601,26 @@ object DirectBinaryInstaller:
   def default: DirectBinaryInstaller =
     DirectBinaryInstaller(BinaryDownloadClient.jdk, NioInstallFileSystem, CommandExecutor.process)
 
+  /** Production installer wired with an explicit sudo credential boundary. */
+  def default(sudoCredentials: SudoCredentialProvider): DirectBinaryInstaller =
+    DirectBinaryInstaller(
+      BinaryDownloadClient.jdk,
+      NioInstallFileSystem,
+      CommandExecutor.process,
+      sudoCredentials
+    )
+
 private final case class PreparedPlan(
     profile: BinaryDistributionProfile,
     profileName: String,
     manifestFingerprint: String,
     plan: ResolvedPlan
+)
+
+private final case class VersionSummaryRow(
+    packageName: String,
+    version: String,
+    newerVersion: String
 )
 
 private object StatefulApplyRunner:
@@ -798,7 +808,6 @@ private[core] object ManifestFingerprint:
 
   private def appendPolicy(builder: StringBuilder, policy: binstaller.config.InstallPolicy): Unit =
     append(builder, "spec.policy.mode", policy.mode.value)
-    append(builder, "spec.policy.dryRun", policy.dryRun.toString)
     append(builder, "spec.policy.continueOnError", policy.continueOnError.toString)
     append(builder, "spec.policy.appsDir", policy.appsDir)
     append(builder, "spec.policy.cleanInstall", policy.cleanInstall.toString)
@@ -961,7 +970,7 @@ private final class ResolvingBinaryInstallerService(
       eventObserver: InstallerEventObserver
   ): InstallerResult =
     val eventContext = InstallerEventContext.start(eventObserver)
-    renderSelectedPlanWithEvents(options, PlanRenderCommand.Plan, eventContext)
+    renderSelectedPlanWithEvents(options, eventContext)
 
   override def applyWithProgress(
       options: InstallerOptions,
@@ -974,31 +983,28 @@ private final class ResolvingBinaryInstallerService(
       eventObserver: InstallerEventObserver
   ): InstallerResult =
     val eventContext = InstallerEventContext.start(eventObserver)
-    if options.dryRun == DryRunMode.Enabled then
-      renderSelectedPlanWithEvents(options, PlanRenderCommand.ApplyDryRun, eventContext)
-    else
-      eventContext.emit(InstallerEvent.ResolvingStarted(options.configPath, _))
-      resolveSelectedPreparedPlan(options) match
-        case Left(error) =>
-          val result = renderError(error)
-          emitSummary(result, stateFilePath = None, eventContext)
-          result
-        case Right(prepared) => validateLockIfRequested(options, prepared) match
-            case Left(error) =>
-              val result = renderLockedApplyError(error)
-              emitSummary(result, stateFilePath = None, eventContext)
-              result
-            case Right(_) =>
-              val statePath = configuredStatePath(options, prepared.plan)
-              eventContext.emit(InstallerEvent.PlanReady(
-                prepared.plan.tools.map(_.name),
-                statePath,
-                _
-              ))
-              val result =
-                StatefulApplyRunner.run(options, prepared, installer, stateStore, eventContext)
-              emitSummary(result, statePath, eventContext)
-              result
+    eventContext.emit(InstallerEvent.ResolvingStarted(options.configPath, _))
+    resolveSelectedPreparedPlan(options) match
+      case Left(error) =>
+        val result = renderError(error)
+        emitSummary(result, stateFilePath = None, eventContext)
+        result
+      case Right(prepared) => validateLockIfRequested(options, prepared) match
+          case Left(error) =>
+            val result = renderLockedApplyError(error)
+            emitSummary(result, stateFilePath = None, eventContext)
+            result
+          case Right(_) =>
+            val statePath = configuredStatePath(options, prepared.plan)
+            eventContext.emit(InstallerEvent.PlanReady(
+              prepared.plan.tools.map(_.name),
+              statePath,
+              _
+            ))
+            val result =
+              StatefulApplyRunner.run(options, prepared, installer, stateStore, eventContext)
+            emitSummary(result, statePath, eventContext)
+            result
 
   def versions(options: InstallerOptions): InstallerResult =
     resolveFromOptions(options).fold(renderError, renderVersions)
@@ -1024,7 +1030,6 @@ private final class ResolvingBinaryInstallerService(
 
   private def renderSelectedPlanWithEvents(
       options: InstallerOptions,
-      command: PlanRenderCommand,
       eventContext: InstallerEventContext
   ): InstallerResult =
     eventContext.emit(InstallerEvent.ResolvingStarted(options.configPath, _))
@@ -1043,7 +1048,7 @@ private final class ResolvingBinaryInstallerService(
             result
           case Right(lockedProvenance) =>
             eventContext.emit(InstallerEvent.PlanReady(plan.tools.map(_.name), statePath, _))
-            val result = PlanRenderer.render(plan, command, lockedProvenance)
+            val result = PlanRenderer.render(plan, lockedProvenance)
             emitSummary(result, statePath, eventContext)
             result
 
@@ -1090,68 +1095,28 @@ private final class ResolvingBinaryInstallerService(
     ))
 
   private def renderVersions(prepared: PreparedPlan): InstallerResult =
-    val references        = versionReferences(prepared.profile)
-    val resolved          = prepared.plan.tools.map(tool => tool.name -> tool.version).toMap
-    val toolsByVersionRef = prepared.profile.spec.plan
-      .map(entry => entry.name -> entry.spec.versionRef)
-      .toMap
-    val lines = prepared.profile.spec.versions.toVector.sortBy(_._1).map:
-      case (name, source) =>
-        val tools     = references.getOrElse(name, Vector.empty)
-        val checksums = checksumSummaryForTools(
-          tools,
-          prepared.plan.tools.filter(tool => toolsByVersionRef.get(tool.name).contains(name))
-        )
-        renderVersionSource(name, source, resolved.get(name), tools, checksums)
+    val newerVersions = GitHubReleaseVersions.newerVersionsByTool(prepared.plan, httpTextClient)
+    val rows          = prepared.plan.tools.map: tool =>
+      VersionSummaryRow(
+        packageName = tool.name,
+        version = ResolvedVersion.render(tool.version),
+        newerVersion = newerVersions.get(tool.name).getOrElse("-")
+      )
+    val lines = renderVersionSummaryTable(rows)
     InstallerResult(
       RenderSafety.displayLines("binstaller versions" +: lines, prepared.plan.redactions),
       0
     )
 
-  private def versionReferences(
-      profile: BinaryDistributionProfile
-  ): Map[String, Vector[String]] = profile.spec.plan
-    .groupBy(_.spec.versionRef)
-    .view
-    .mapValues(_.map(_.name))
-    .toMap
-
-  private def renderVersionSource(
-      name: String,
-      source: VersionSource,
-      resolved: Option[ResolvedVersion],
-      tools: Vector[String],
-      checksumSummary: String
-  ): String =
-    val toolList = if tools.isEmpty then "none" else tools.mkString(", ")
-    source match
-      case VersionSource.Pinned(value) =>
-        s"pinned $name: $value (tools: $toolList; checksums: $checksumSummary)"
-      case VersionSource.Dynamic(DynamicVersionKind.LatestUrl, note) =>
-        val suffix = note.map(value => s" - $value").getOrElse("")
-        s"dynamic $name: dynamic latest-url (tools: $toolList; checksums: $checksumSummary)$suffix"
-      case VersionSource.Resolver(VersionResolverKind.HttpText, url) =>
-        val value      = resolved.map(ResolvedVersion.render).getOrElse("<unresolved>")
-        val provenance = resolved.flatMap:
-          case ResolvedVersion.Concrete(_, value)  => value
-          case ResolvedVersion.DynamicLatestUrl(_) => None
-        s"resolved $name: $value from $url${UrlProvenance.redirectSuffix(provenance)} " +
-          s"(tools: $toolList; checksums: $checksumSummary)"
-
-  private def checksumSummaryForTools(
-      referencedNames: Vector[String],
-      tools: Vector[ResolvedTool]
-  ): String =
-    if referencedNames.isEmpty then "none"
-    else
-      val byName = tools.map(tool => tool.name -> tool).toMap
-      referencedNames.map: name =>
-        byName.get(name).flatMap(_.download.checksum) match
-          case Some(checksum) if ResolvedChecksum.isConfigured(checksum) => s"$name configured"
-          case Some(checksum) if ResolvedChecksum.isDiscovered(checksum) => s"$name discovered"
-          case Some(_)                                                   => s"$name configured"
-          case None                                                      => s"$name missing"
-      .mkString(", ")
+  private def renderVersionSummaryTable(rows: Vector[VersionSummaryRow]): Vector[String] =
+    val headers      = VersionSummaryRow("package", "version", "newer version")
+    val displayRows  = headers +: rows
+    val packageWidth = displayRows.map(_.packageName.length).max
+    val versionWidth = displayRows.map(_.version.length).max
+    displayRows.map: row =>
+      s"${row.packageName.padTo(packageWidth, ' ')}  " +
+        s"${row.version.padTo(versionWidth, ' ')}  " +
+        row.newerVersion
 
   private def renderError(error: ResolvePlanError): InstallerResult =
     InstallerResult(ResolvePlanError.renderLines(error), 1)
@@ -1231,18 +1196,14 @@ private object LockFileBuilder:
     case ResolvedVersion.Concrete(value, provenance) => (Some(value), provenance, false)
     case ResolvedVersion.DynamicLatestUrl(_)         => (None, None, true)
 
-private enum PlanRenderCommand:
-  case Plan, ApplyDryRun
-
 private object PlanRenderer:
 
   def render(
       plan: ResolvedPlan,
-      command: PlanRenderCommand,
       lockedProvenance: Option[LockedApplyProvenance] = None
   ): InstallerResult = InstallerResult(
     RenderSafety.displayLines(
-      header(plan, command, lockedProvenance) ++
+      header(plan, lockedProvenance) ++
         plan.tools.zipWithIndex.flatMap(renderTool(_, lockedProvenance)),
       plan.redactions
     ),
@@ -1251,7 +1212,6 @@ private object PlanRenderer:
 
   private def header(
       plan: ResolvedPlan,
-      command: PlanRenderCommand,
       lockedProvenance: Option[LockedApplyProvenance]
   ): Vector[String] =
     val sudoSymlinkCount =
@@ -1266,12 +1226,8 @@ private object PlanRenderer:
       if sudoSymlinkCount == 0 then "sudo risk: none"
       else
         s"sudo risk: YES - $sudoSymlinkCount sudo symlink command(s) require elevated privileges"
-    val title = command match
-      case PlanRenderCommand.Plan        => "binstaller plan (dry-run)"
-      case PlanRenderCommand.ApplyDryRun => "binstaller apply --dry-run"
-
     Vector(
-      title,
+      "binstaller plan",
       s"tools: ${plan.tools.size}",
       s"apps dir: ${plan.policy.appsDir} (not created)",
       s"policy mode: ${plan.policy.mode.value}",

@@ -2,7 +2,6 @@ package binstaller.cli
 
 import binstaller.core.BinaryInstallerService
 import binstaller.core.DownloadProgressStatus
-import binstaller.core.DryRunMode
 import binstaller.core.HttpTextClient
 import binstaller.core.InstallerEvent
 import binstaller.core.InstallerEventObserver
@@ -14,16 +13,30 @@ import binstaller.core.LockedApplyMode
 import binstaller.core.LockOptions
 import binstaller.core.ResetState
 import binstaller.core.RenderSafety
+import binstaller.core.SudoCredentialError
+import binstaller.core.SudoCredentialProvider
+import binstaller.core.SudoCredentialRequest
+import binstaller.core.SudoPassword
 import binstaller.core.ToolSelection
 import binstaller.core.VerboseOutput
 import picocli.CommandLine
+import picocli.CommandLine.IHelpSectionRenderer
 import picocli.CommandLine.Option as CliOption
 import picocli.CommandLine.Command
+import picocli.CommandLine.Help
+import picocli.CommandLine.Model.UsageMessageSpec
 import picocli.CommandLine.ScopeType
 
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.PrintWriter
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.LinkedHashMap
 import java.net.URI
 import java.util.concurrent.Callable
+import scala.collection.mutable.ArrayBuffer
 
 /** Picocli-backed command boundary for the `binstaller` process. */
 object CliModule:
@@ -39,7 +52,7 @@ object CliModule:
 
   /** Run the CLI with injectable writers for tests or alternate launchers. */
   def run(args: Vector[String], out: PrintWriter, err: PrintWriter): Int =
-    commandLine(BinaryInstallerService.resolving(HttpTextClient.jdk), out, err).execute(args*)
+    commandLine(productionService(err), out, err).execute(args*)
 
   /** Build the root command with an injectable core service. */
   def commandLine(
@@ -67,7 +80,11 @@ object CliModule:
       "lock",
       subcommandLine(LockCommand(root, service, out, err), out, err)
     )
+    RootHelpLogo.install(commandLine)
     commandLine
+
+  private def productionService(err: PrintWriter): BinaryInstallerService =
+    BinaryInstallerService.resolving(HttpTextClient.jdk, TerminalSudoCredentialProvider(err))
 
   private def subcommandLine(
       command: Callable[Integer],
@@ -78,6 +95,120 @@ object CliModule:
     commandLine.setOut(out)
     commandLine.setErr(err)
     commandLine
+
+private final class TerminalSudoCredentialProvider(err: PrintWriter) extends SudoCredentialProvider:
+
+  def requestSudoPassword(
+      request: SudoCredentialRequest
+  ): Either[SudoCredentialError, SudoPassword] = Option(System.console()) match
+    case None          => requestFromDevTty(request.operation)
+    case Some(console) =>
+      err.println(s"sudo password required for ${request.operation}")
+      err.flush()
+      passwordFromChars(Option(console.readPassword("sudo password: ")))
+
+  private def requestFromDevTty(operation: String): Either[SudoCredentialError, SudoPassword] =
+    val tty = Path.of("/dev/tty")
+    if !Files.isReadable(tty) || !Files.isWritable(tty) then
+      Left(SudoCredentialError.Unavailable(
+        "sudo credentials required, but no interactive terminal is available"
+      ))
+    else
+      try
+        val input = FileInputStream(tty.toFile)
+        try
+          val output = FileOutputStream(tty.toFile)
+          try readPasswordFromDevTty(operation, input, output)
+          finally output.close()
+        finally input.close()
+      catch
+        case _: Exception => Left(SudoCredentialError.Unavailable(
+            "sudo credentials required, but terminal password input is unavailable"
+          ))
+
+  private def readPasswordFromDevTty(
+      operation: String,
+      input: FileInputStream,
+      output: FileOutputStream
+  ): Either[SudoCredentialError, SudoPassword] =
+    if !setDevTtyEcho(enabled = false) then
+      Left(SudoCredentialError.Unavailable(
+        "sudo credentials required, but terminal password input is unavailable"
+      ))
+    else
+      try
+        output.write(
+          s"sudo password required for $operation\nsudo password: ".getBytes(StandardCharsets.UTF_8)
+        )
+        output.flush()
+        val bytes = readPasswordBytes(input)
+        output.write('\n')
+        output.flush()
+        passwordFromBytes(bytes)
+      finally
+        val _ = setDevTtyEcho(enabled = true)
+
+  private def readPasswordBytes(input: FileInputStream): Array[Byte] =
+    val bytes = ArrayBuffer.empty[Byte]
+    var done  = false
+    while !done do
+      input.read() match
+        case -1                  => done = true
+        case '\n' | '\r'         => done = true
+        case value if value >= 0 => bytes += value.toByte
+        case _                   => done = true
+    bytes.toArray
+
+  private def passwordFromBytes(bytes: Array[Byte]): Either[SudoCredentialError, SudoPassword] =
+    try passwordFromChars(Some(String(bytes, StandardCharsets.UTF_8).toCharArray))
+    finally java.util.Arrays.fill(bytes, 0.toByte)
+
+  private def passwordFromChars(charsOption: Option[Array[Char]])
+      : Either[SudoCredentialError, SudoPassword] = charsOption match
+    case Some(chars) =>
+      try
+        val password = String(chars)
+        if password.isEmpty then Left(SudoCredentialError.Canceled)
+        else Right(SudoPassword.fromString(password))
+      finally java.util.Arrays.fill(chars, '\u0000')
+    case None => Left(SudoCredentialError.Canceled)
+
+  private def setDevTtyEcho(enabled: Boolean): Boolean =
+    val mode = if enabled then "echo" else "-echo"
+    try
+      val process = ProcessBuilder("sh", "-c", s"stty $mode < /dev/tty")
+        .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+        .redirectError(ProcessBuilder.Redirect.DISCARD)
+        .start()
+      process.waitFor() == 0
+    catch
+      case _: Exception => false
+
+private object RootHelpLogo:
+
+  def install(commandLine: CommandLine): Unit =
+    val sectionMap = LinkedHashMap[String, IHelpSectionRenderer](commandLine.getHelpSectionMap)
+    sectionMap.put(UsageMessageSpec.SECTION_KEY_HEADER, render)
+    val _ = commandLine.getCommandSpec.usageMessage.sectionMap(sectionMap)
+
+  private val render: IHelpSectionRenderer = new IHelpSectionRenderer:
+    override def render(help: Help): String =
+      if help.commandSpec.name == "binstaller" then logo else help.header()
+
+  private def logo: String =
+    val lines = Vector(
+      " _     _           _        _ _           ",
+      "| |__ (_)_ __  ___| |_ __ _| | | ___ _ __ ",
+      "| '_ \\| | '_ \\/ __| __/ _` | | |/ _ \\ '__|",
+      "| |_) | | | | \\__ \\ || (_| | | |  __/ |   ",
+      "|_.__/|_|_| |_|___/\\__\\__,_|_|_|\\___|_|   "
+    )
+    val colors = Vector(fansi.Color.Cyan, fansi.Color.Blue, fansi.Color.Magenta)
+    val title  = fansi.Bold.On(fansi.Color.Green("binary installer"))
+    lines.zipWithIndex
+      .map((line, index) => colors(index % colors.size)(line).toString)
+      .appended(s"  ${title.toString}")
+      .mkString("", "\n", "\n\n")
 
 private final case class GlobalOptions(
     configPath: Option[String],
@@ -189,7 +320,7 @@ private abstract class SelectableCommand(
   @CliOption(
     names = Array("--only"),
     paramLabel = "TOOL",
-    description = Array("Render only the named tool. May be repeated.")
+    description = Array("Select only the named tool. May be repeated.")
   )
   def addOnlyTool(value: String): Unit = onlyTools = onlyTools :+ value
 
@@ -213,9 +344,28 @@ private final class PlanCommand(
     out: PrintWriter,
     err: PrintWriter
 ) extends SelectableCommand(root, out, err):
+  private var lockedApply: LockedApplyMode = LockedApplyMode.Disabled
+  private var lockPath: String             = LockOptions.defaultOutputPath
+
+  @CliOption(
+    names = Array("--locked"),
+    description = Array("Require a compatible JSON lock file before rendering.")
+  )
+  def setLockedApply(value: Boolean): Unit = lockedApply = LockedApplyMode.fromFlag(value)
+
+  @CliOption(
+    names = Array("--lock-file"),
+    paramLabel = "FILE",
+    description = Array("Path to the JSON lock file used by --locked.")
+  )
+  def setLockPath(value: String): Unit = lockPath = value
 
   override def call(): Integer = executeWithOptions(
-    _.copy(selection = selection, dryRun = DryRunMode.Enabled),
+    _.copy(
+      selection = selection,
+      lockPath = lockPath,
+      lockedApply = lockedApply
+    ),
     service.plan
   )
 
@@ -230,27 +380,20 @@ private final class ApplyCommand(
     out: PrintWriter,
     err: PrintWriter
 ) extends SelectableCommand(root, out, err):
-  private var dryRun: DryRunMode                   = DryRunMode.Disabled
   private var applyConfirmation: ApplyConfirmation = ApplyConfirmation.Disabled
   private var lockedApply: LockedApplyMode         = LockedApplyMode.Disabled
   private var lockPath: String                     = LockOptions.defaultOutputPath
 
   @CliOption(
-    names = Array("--dry-run"),
-    description = Array("Render the apply plan without changing files.")
-  )
-  def setDryRun(value: Boolean): Unit = dryRun = DryRunMode.fromFlag(value)
-
-  @CliOption(
     names = Array("--yes"),
-    description = Array("Confirm non-dry-run apply actions, including sudo symlinks.")
+    description = Array("Confirm apply actions, including sudo symlinks.")
   )
   def setApplyConfirmation(value: Boolean): Unit =
     applyConfirmation = ApplyConfirmation.fromFlag(value)
 
   @CliOption(
     names = Array("--locked"),
-    description = Array("Require a compatible JSON lock file before rendering or applying.")
+    description = Array("Require a compatible JSON lock file before applying.")
   )
   def setLockedApply(value: Boolean): Unit = lockedApply = LockedApplyMode.fromFlag(value)
 
@@ -264,22 +407,19 @@ private final class ApplyCommand(
   override def call(): Integer = executeWithOptions(
     _.copy(
       selection = selection,
-      dryRun = dryRun,
       applyConfirmation = applyConfirmation,
       lockPath = lockPath,
       lockedApply = lockedApply
     ),
     options =>
-      val eventRenderer =
-        CliApplyEventRenderer(out, enabled = options.dryRun == DryRunMode.Disabled)
-      val result = service.applyWithEvents(options, eventRenderer)
+      val eventRenderer = CliApplyEventRenderer(out)
+      val result        = service.applyWithEvents(options, eventRenderer)
       eventRenderer.finish()
       result.copy(lines = CliApplyOutput.colorLines(result.lines) ++ eventRenderer.summaryLines)
   )
 
 private final class CliApplyEventRenderer(
-    out: PrintWriter,
-    enabled: Boolean
+    out: PrintWriter
 ) extends InstallerEventObserver:
   private val width                                   = 30
   private var lastBuckets: Map[String, Int]           = Map.empty
@@ -287,11 +427,11 @@ private final class CliApplyEventRenderer(
   private var summary: Option[InstallerEvent.Summary] = None
 
   def onEvent(event: InstallerEvent): Unit = event match
-    case progress: InstallerEvent.DownloadProgress if enabled => renderProgress(progress)
-    case value: InstallerEvent.Summary                        => summary = Some(value)
-    case _                                                    => ()
+    case progress: InstallerEvent.DownloadProgress => renderProgress(progress)
+    case value: InstallerEvent.Summary             => summary = Some(value)
+    case _                                         => ()
 
-  def finish(): Unit = if enabled && activeLineLength > 0 then
+  def finish(): Unit = if activeLineLength > 0 then
     out.print(s"\r${" " * activeLineLength}\r")
     out.flush()
     activeLineLength = 0
@@ -470,6 +610,6 @@ private final class LockCommand(
   def setOutputPath(value: String): Unit = outputPath = value
 
   override def call(): Integer = executeWithOptions(
-    _.copy(selection = selection, dryRun = DryRunMode.Enabled),
+    _.copy(selection = selection),
     options => service.lock(options, LockOptions(outputPath))
   )
