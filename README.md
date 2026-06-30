@@ -169,10 +169,31 @@ script-friendly.
 binstaller tui --config config.example.yaml
 ```
 
-The TUI owns checkbox selection, filtering, selected-entry plan preview,
-dry-run, confirmed apply, logs, and error/root-cause modals inside one
-workspace. In non-interactive shells, it renders a static fallback frame instead
-of entering raw mode or the alternate screen.
+The workspace is table-first: a compact header, a selectable tool table, a lower
+info bar, and one command legend. The table owns checkbox selection, row focus,
+status, and execution progress. The lower info bar shows selected-tool details
+by default, then plan preview, dry-run/apply output, logs, or error output when
+those views are active.
+
+Core shortcuts are `Space` for the current row, `a`/`c`/`i` for visible-row
+bulk selection, `/` for filtering, `p` for plan preview, `d` for dry-run, `r`
+for confirmed apply, `l` for logs, `Enter` for details or root-cause modals,
+`?` for help, and `q`/`Ctrl+C` for terminal cleanup and exit. During dry-run or
+apply, selected candidates remain in stable order; the active row shows spinner,
+progress, byte counts when known, and final completed, failed, skipped, or
+pending status. Very narrow terminals keep the ordered candidate list and move
+the active progress bar to the lower info bar.
+
+Privileged sudo symlinks are still limited by manifest policy and confirmation.
+When cached sudo credentials are unavailable, TUI apply opens a focused masked
+password modal that names the operation, tool, destination, and target. Password
+text is sent through the core secret-stdin boundary, never argv, logs, errors,
+previews, or state. `Escape`, `Ctrl+C`, `q`, end-of-input, or `/cancel` plus
+`Enter` cancels only the current privileged operation and reports a clear apply
+failure.
+
+In non-interactive shells, the TUI renders a static fallback frame instead of
+entering raw mode or the alternate screen.
 
 ## Build From Source
 

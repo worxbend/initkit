@@ -39,13 +39,20 @@ behavior out of the manifest contract.
 
 The remaining external process boundaries are intentionally narrow:
 
-- `sudo ln -sfn <target> <path>` for privileged symlinks.
+- `sudo -n true`, `sudo -n ln -sfn <target> <path>`, and when a UI supplies a
+  password, `sudo -S -p "" ln -sfn <target> <path>` for privileged symlinks.
 - `tar -xJf <archive> -C <extractDir>` for the `tar.xz` fallback.
 - `stty` calls in the TUI terminal backend for raw-mode setup and restore.
 
 Core command execution uses argv, not manifest-provided shell strings. Process
 execution has a default 15 minute timeout. Failure messages quote arguments so
 diagnostics preserve argument boundaries.
+
+Password-backed sudo uses modeled secret stdin. The password is not included in
+argv, environment variables, command previews, command diagnostics, installer
+events, apply state, logs, or TUI modals. Command failures redact the secret
+from command messages and captured stdout/stderr before they reach renderers or
+state.
 
 ## Archive Safety
 
@@ -107,6 +114,24 @@ Sudo is available only for symlink creation. It requires all of the following:
 Ordinary downloads, archive extraction, executable checks, local symlinks, and
 state writes do not cross the sudo boundary.
 
+The privileged-command flow is:
+
+1. Core probes cached credentials with fixed `sudo -n true` argv.
+2. If cached credentials are valid, core creates the symlink with fixed
+   `sudo -n ln -sfn <target> <path>` argv and does not request a password.
+3. If the cache probe fails, core asks an injected `SudoCredentialProvider` for
+   one password for that privileged operation.
+4. TUI apply supplies that provider with a focused masked password modal. CLI
+   and other non-interactive callers use the unavailable provider unless they
+   inject their own credential boundary.
+5. The password-backed command uses fixed `sudo -S -p "" ln -sfn <target>
+   <path>` argv plus secret stdin.
+
+Credential cancellation is typed as `SudoCredentialError.Canceled` and becomes a
+tool failure for the current privileged symlink. It does not cancel the whole
+process by itself; existing `continueOnError` behavior determines whether later
+tools continue.
+
 ## TUI Selection And Confirmation
 
 `binstaller tui` owns checkbox selection inside TUI-local state. The selected
@@ -124,6 +149,12 @@ Real apply (`r`) first opens an in-frame confirmation modal. Core apply is not
 called with non-dry-run options until the user presses `Enter` in that modal.
 `Escape`, `n`, `q`, or `Ctrl+C` leave the confirmation path without starting
 real apply.
+
+If real apply later needs sudo credentials, the TUI password modal opens inside
+the same terminal workspace. It renders only a masked character count and
+redacted operation context. `Escape`, `Ctrl+C`, `q`, end-of-input, or `/cancel`
+plus `Enter` cancels the credential request and fails only the current
+privileged operation.
 
 ## State-File Policy
 
@@ -152,6 +183,12 @@ Redaction is display-only: raw values are preserved for filesystem and network
 behavior. This prevents corrupting legitimate paths or URLs while reducing
 secret exposure in terminal output.
 
+Passwords have a stronger guarantee than ordinary display redactions: password
+values are wrapped as secret command input and are never part of the stable
+renderable data model. Tests cover no leakage into command argv/spec strings,
+command diagnostics, installer events, TUI logs, error/root-cause modals, prompt
+frames, or apply state.
+
 Terminal-control scrubbing is also display-only. Untrusted text is collapsed
 into safe terminal lines before rendering so config values, resolver output,
 download diagnostics, command stdout/stderr snippets, and modal details cannot
@@ -167,3 +204,12 @@ escape sequences into CLI/TUI output.
 - Dry-run and real apply actions inside `binstaller tui` currently run
   synchronously while rendering execution updates; they do not provide
   preemptive cancellation for long-running work.
+- Password-prompt cancellation is scoped to the credential request/current
+  privileged operation. It is not a general cancellation mechanism for an
+  already-running download, extraction, or command.
+- Live raw-terminal password entry, resize during password/root-cause modals,
+  and terminal cleanup require a real interactive terminal for manual
+  validation; deterministic tests cover state, rendering, redaction, and fake
+  terminal cleanup.
+- Native image validation is environment-bound when `native-image` is not
+  installed locally; the release workflow remains the native build boundary.

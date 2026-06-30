@@ -100,8 +100,9 @@ Expected results:
 
 - The command prints a TUI-shaped browsing frame plus
   `non-interactive terminal detected; rendered a static TUI frame`.
-- The frame includes `mode browse`, `Plan`, `Details`, `Logs`, selected count,
-  config path, and `state $SMOKE_STATE`.
+- The frame includes `mode browse`, a selected table, a lower info bar, the
+  current footer shortcuts, selected count, config path, and `state
+  $SMOKE_STATE`.
 - The output does not contain alternate-screen setup sequences such as
   `?1049h`.
 - Neither `$SMOKE_ROOT/apps` nor `$SMOKE_STATE` is created.
@@ -120,10 +121,11 @@ Expected results:
   shell prompt, and shows `binstaller` with `mode browse`.
 - The header shows manifest `tui-smoke`, the config path, `state $SMOKE_STATE`,
   host summary, action mode, and `selected 2 / total 2`.
-- The Plan pane shows checked rows for `alpha` and `beta`.
-- The Details pane shows the selected tool URL, archive mapping for `alpha`,
-  symlink preview for `beta`, sudo risk, and dry-run operation preview.
-- The Logs pane is visible and focusable.
+- The top table shows checked rows for `alpha` and `beta`.
+- The lower info bar shows selected-tool details by default, including the URL,
+  archive mapping for `alpha`, symlink preview for `beta`, sudo risk, and
+  dry-run operation preview.
+- Logs are focusable with `l` or `Tab`.
 
 ## Modal Close And Navigation
 
@@ -135,12 +137,12 @@ Use these keys inside the same TUI session:
 2. Press `Escape`.
    Expected: Help closes and the same browsing frame returns.
 3. Press `Tab`, then `Tab` again.
-   Expected: focus cycles from Plan to Details to Logs.
+   Expected: focus cycles through table and lower info/log focus states.
 4. Press `b` or `Shift+Tab`.
-   Expected: focus moves backward one pane.
-5. Return focus to Plan, then press `Down`.
-   Expected: the selected row changes from `alpha` to `beta`, and Details
-   changes to `Details: beta`.
+   Expected: focus moves backward one area.
+5. Return focus to the table, then press `Down`.
+   Expected: the highlighted row changes from `alpha` to `beta`, and the lower
+   info bar changes to `Details: beta`.
 6. Press `/`, type `alp`, then press `Enter`.
    Expected: the header filter changes to `alp`, the visible table contains
    only `alpha`, and checked selection state is preserved.
@@ -160,12 +162,14 @@ With the no-network profile loaded:
    Expected: selected-entry plan preview lines are appended to Logs; no apps
    directory or state file is created.
 4. Press `d`.
-   Expected: the primary view changes to execution mode, shows dry-run
-   operations, recent logs, and a final summary; no apps directory or state
-   file is created.
+   Expected: the primary view changes to execution mode, keeps selected
+   candidates in stable order, shows row-level dry-run status/progress, recent
+   logs, and a final summary; no apps directory or state file is created.
 5. Press `Enter` after dry-run finishes.
-   Expected: if a failed row exists, a root-cause modal opens; otherwise the
-   execution view remains stable. Press `Escape` to return.
+   Expected: if the focused execution row failed, its root-cause modal opens.
+   If no failed row is focused but the action has failure output, that failure
+   opens. Otherwise the execution view remains stable. Press `Escape` to
+   return.
 6. Restart the TUI, press `r`.
    Expected: a confirmation modal opens before any apply work starts.
 7. Press `Escape` or `n`.
@@ -182,7 +186,7 @@ no-selection modal and leave apps/state paths untouched.
 ## Detail And Log Scrolling
 
 Details can overflow with long URLs, archive mappings, and symlink previews.
-Use the `alpha` row and put focus on Details:
+Use the `alpha` row and put focus on the lower info/details area:
 
 ```text
 Tab
@@ -194,7 +198,7 @@ End
 
 Expected results:
 
-- When Details overflows, its pane title includes a label like
+- When details overflow, the lower info title includes a label like
   `scroll 2-7/12`.
 - The scrollbar column uses `█` for the thumb and `│` for the track.
 - `PageDown`, `Down`, `Home`, and `End` move the visible detail window without
@@ -212,13 +216,31 @@ Home
 
 Expected results:
 
-- If the Logs pane title shows `scroll`, the same scrollbar markers move as the
+- If the logs title shows `scroll`, the same scrollbar markers move as the
   log offset changes.
 - If there is no `scroll` label, the current smoke profile has too few log
   lines to overflow; focus movement is still valid, and overflowing log
   behavior is covered by `tui.test`.
-- Mouse wheel events scroll the focused Details or Logs pane in terminal
+- Mouse wheel events scroll the focused details or logs area in terminal
   emulators that send SGR mouse wheel sequences.
+
+## Error And Root-Cause Smoke
+
+Use the no-network profile and press `r`, then press `Enter` in the confirmation
+modal only if `$SMOKE_ROOT/apps` and `$SMOKE_STATE` are disposable.
+
+Expected results:
+
+- Failed network or install output appears first in the lower info bar while
+  the execution table remains visible.
+- The failed row is red/error styled and remains focusable.
+- Move focus to the failed row if needed, then press `Enter`.
+- A root-cause modal opens for that focused row, with category, action, root
+  cause, suggestion, and bounded stdout/stderr or environment hints when
+  available.
+- `PageDown`, `Down`, `Home`, `End`, and mouse wheel scroll long root-cause
+  details without overlapping the table or footer.
+- `Escape` closes the modal and returns to the execution view.
 
 ## Resize Smoke
 
@@ -235,11 +257,43 @@ Expected results:
 
 - After a resize, the next input polling cycle or navigation key rerenders the
   frame using the new terminal dimensions.
-- Text stays inside pane width. Long paths and URLs truncate in table cells
-  with an ellipsis; full values remain available in Details.
+- Text stays inside the current frame width. Long paths and URLs truncate in
+  table cells with an ellipsis; full values remain available in the lower info
+  bar.
 - Pane titles, status lines, keybar, and modal text do not overlap.
 - Repeat the resize after pressing `d`; the execution view should also rerender
   within the new width.
+- Repeat the resize while help, root-cause, and password modals are open when
+  those states are available. Modal text should stay clipped inside the frame,
+  and row/log focus should survive the resize.
+
+## Password Modal Smoke
+
+Run this only in a controlled local terminal where sudo prompts are acceptable.
+Use a disposable profile with a sudo symlink and an isolated apps directory. The
+state file must be a current-directory filename.
+
+To force the password path, clear the cached credential state in a separate
+terminal or wait for the sudo timestamp to expire. Do not type a real production
+password into a shared or recorded terminal.
+
+Expected results:
+
+- If sudo credentials are cached, apply creates the sudo symlink path without
+  showing the password modal.
+- If cached credentials are unavailable, a focused `Sudo password required`
+  modal appears inside the TUI.
+- The modal names the operation, tool, destination, and target when available.
+- Typed characters render only as `*`; the cleartext password never appears in
+  the frame, logs, lower error output, root-cause modal, or state file.
+- Resize while the modal is open keeps the masked input and modal context
+  inside the visible frame.
+- `Escape`, Ctrl+C, `q`, or `/cancel` then `Enter` cancels the credential
+  request. The current privileged operation fails with a clear
+  `sudo credentials canceled` style message; later tools may continue when the
+  profile uses `continueOnError: true`.
+- After cancellation or submit, the terminal still restores echo and cursor
+  state on exit.
 
 ## Quit, Ctrl+C, And Cleanup
 

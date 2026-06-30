@@ -2,9 +2,10 @@
 
 Date: 2026-06-30
 
-Scope: final review of the `binstaller tui` refactor after the command
-migration, TUI state/action work, modal handling, terminal hardening, and
-implementation docs were completed.
+Scope: review of the `binstaller tui` refactor after the command migration,
+table-first workspace, execution-row progress, password modal, logs/errors,
+responsive rendering, terminal hardening, and implementation docs were
+completed.
 
 ## Command Boundaries
 
@@ -42,17 +43,24 @@ Browsing control flow is deterministic:
 - `q` and `Ctrl+C` exit through the terminal cleanup path when input is being
   processed.
 
-Execution rendering consumes core installer events and shows active phase,
-progress, bytes, elapsed time, recent logs, completed/failed/skipped rows, and
-the final summary.
+Execution rendering consumes core installer events and keeps selected candidates
+in stable order. The active row owns phase, spinner, progress bar, byte counts,
+and elapsed time; completed, failed, skipped, pending, interrupted, and
+remaining rows stay visible. Very narrow terminals preserve the ordered
+candidate list and move active progress to the lower info bar.
 
 ## Modal Rendering
 
 The TUI renders modals in-frame for help, no-selection messages, real-apply
-confirmation, startup failures, action failures, and root-cause details for
+confirmation, startup failures, password prompts, and root-cause details for
 failed execution rows. Informational and error modals close with `Enter` or
 `Escape`; real-apply confirmation starts only with `Enter` and cancels with
 `Escape` or `n`.
+
+Action errors render in the lower info bar first so the table remains visible.
+`Enter` opens root-cause details for the focused failed execution row, or for
+the current failure output when no failed row is focused. Long root-cause bodies
+are scrollable.
 
 Modal bodies and log lines use the same render-safety path as other terminal
 output. Sensitive environment-derived values are replaced with `<redacted>`,
@@ -86,6 +94,14 @@ TUI-specific risk controls are now documented and tested:
 - Dry-run actions use the core dry-run path and do not download, install, create
   symlinks, or write state.
 - Real apply requires the TUI confirmation modal before non-dry-run core apply.
+- Sudo symlinks use the core privilege boundary. Cached sudo credentials skip
+  prompting; otherwise the TUI password modal supplies one password through
+  modeled secret stdin.
+- Password values are not stored in argv, command diagnostics, installer
+  events, TUI logs, error/root-cause details, prompt frames, previews, or apply
+  state.
+- Password prompt cancellation with Escape, Ctrl+C, `q`, end-of-input, or
+  `/cancel` plus `Enter` fails only the current privileged operation.
 - Non-interactive shells render a static fallback frame instead of entering raw
   mode or the alternate screen.
 - Terminal setup and restore use direct `stty` argv calls through the terminal
@@ -101,19 +117,28 @@ Current automated coverage includes:
   routes to the TUI without calling the injected plan/apply service.
 - `tui/test/src/binstaller/tui/TuiModuleTest.scala`: TUI state ownership,
   selection/filter guarantees, selected-entry plan/dry-run/apply actions,
-  no-selection modals, confirmation modal behavior, root-cause modals,
-  terminal cleanup, non-interactive fallback, resize bounds, and direct `stty`
-  process boundaries.
-- `tui/test/src/binstaller/tui/TuiModuleTest.scala`: failed dry-run opens an
-  error modal with redacted bounded snippets and scrubbed terminal controls.
-- `core/test/src/binstaller/core/CoreModuleTest.scala`: apply errors redact
-  sensitive runtime values and scrub terminal controls before display.
+  no-selection modals, confirmation modal behavior, execution-row progress,
+  focused failed-row root causes, focusable logs, password prompt rendering and
+  cancellation, terminal cleanup, non-interactive fallback, resize bounds, and
+  direct `stty` process boundaries.
+- `tui/test/src/binstaller/tui/TuiModuleTest.scala`: failed dry-run/apply output
+  appears in the lower info bar first, then opens redacted root-cause details
+  with bounded snippets and scrubbed terminal controls.
+- `core/test/src/binstaller/core/CoreModuleTest.scala`: cached sudo credentials,
+  requested credentials, cancellation, command failure rendering, apply errors,
+  event/state redaction, and terminal-control scrubbing are covered.
 
 ## Documented Deferrals
 
 - Live raw-terminal startup, resize, modal close, `q`, Ctrl+C, and cleanup
   remain manual smoke checks in `docs/tui-smoke.md` when the agent or CI shell is
   not attached to a real TTY.
+- Live password entry, password-modal resize, cached-sudo skip, cancellation,
+  and terminal echo restoration remain manual smoke checks in
+  `docs/tui-smoke.md` because this agent shell is non-interactive.
+- Live mouse-wheel scrolling and root-cause modal scrolling remain
+  terminal-emulator dependent manual checks; deterministic input tests cover the
+  parser/controller/rendering behavior.
 - Native-image validation remains environment-dependent locally; the release
   workflow is the required native build and smoke boundary when `native-image`
   is unavailable on PATH.

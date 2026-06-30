@@ -550,3 +550,18 @@ baseline and close the remaining gaps in this order:
   resize/password/error smoke remains environment-blocked here because
   `test -t 0` exits 1 and reports `stdin_is_tty=false`; `command -v
   native-image` also exits 1 while `java -version` reports OpenJDK 25.0.3.
+- 2026-06-30: Implementation iteration 53 completed T011 documentation
+  updates. README, `docs/tui-guide.md`, `docs/security.md`,
+  `docs/testing.md`, `docs/tui-smoke.md`, and
+  `docs/first-class-tui-review.md` now describe the current table-first
+  workspace, execution rows/progress, focusable logs/errors, row-specific
+  root-cause behavior, password modal, privilege boundary, redaction and
+  cancellation guarantees, deterministic test coverage, manual smoke workflow,
+  and deliberate deferrals.
+- T011 kept environment-bound validations explicit: live raw-terminal startup,
+  resize, password modal, root-cause modal, mouse-wheel scrolling, `q`,
+  Ctrl+C, and cleanup remain manual in `docs/tui-smoke.md`; native-image
+  validation remains tied to an environment with `native-image` installed.
+  Documentation validation passed: `./mill app.run tui --help`,
+  `./mill app.run tui --config config.example.yaml`, `git diff --check`, and
+  `jq empty .agent-loop/tasks.json`.
