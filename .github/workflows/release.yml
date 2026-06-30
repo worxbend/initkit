@@ -1,0 +1,241 @@
+name: 🚀 Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version or tag, for example v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 🧱 Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-24.04
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+          - target: macos-amd64
+            runner: macos-15-intel
+          - target: macos-arm64
+            runner: macos-15
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🏷️ Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ -z "${version}" ]]; then
+            echo "❌ Release version is empty" >&2
+            exit 1
+          fi
+
+          echo "🏷️ Building release ${version} for ${{ matrix.target }}"
+          echo "value=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: ⚡ Cache Mill and dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/coursier
+            ~/.cache/mill
+            ~/.ivy2/cache
+          key: ${{ runner.os }}-${{ runner.arch }}-mill-${{ hashFiles('build.mill', 'mill') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-mill-
+
+      - name: ☕ Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          distribution: graalvm
+          java-version: "21"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: ✅ Compile and test
+        shell: bash
+        run: |
+          echo "::group::🧪 Compile"
+          ./mill __.compile
+          echo "::endgroup::"
+          echo "::group::🧫 Test"
+          ./mill __.test
+          echo "::endgroup::"
+
+      - name: 🔥 Build native image
+        id: native-image
+        shell: bash
+        run: |
+          echo "::group::🔥 Native image"
+          native_ref="$(./mill show app.nativeImage | sed -n 's/^"\(.*\)"$/\1/p' | tail -n 1)"
+          image_path="${native_ref#ref:v0:*:}"
+          if [[ "${image_path}" == "${native_ref}" && ! -f "${image_path}" ]]; then
+            image_path="${native_ref}"
+          fi
+
+          if [[ -z "${image_path}" || ! -f "${image_path}" ]]; then
+            echo "❌ Native image was not produced at expected path: ${image_path}" >&2
+            exit 1
+          fi
+
+          echo "✅ Native image ready: ${image_path}"
+          echo "path=${image_path}" >> "${GITHUB_OUTPUT}"
+          echo "::endgroup::"
+
+      - name: 📦 Package artifact
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.value }}"
+          target="${{ matrix.target }}"
+          package_root="dist/binstaller-${version}-${target}"
+          archive="binstaller-${version}-${target}.tar.gz"
+
+          echo "::group::📦 Package ${archive}"
+          mkdir -p "${package_root}"
+          cp "${{ steps.native-image.outputs.path }}" "${package_root}/binstaller"
+          chmod +x "${package_root}/binstaller"
+
+          tar -C dist -czf "${archive}" "binstaller-${version}-${target}"
+          shasum -a 256 "${archive}" > "${archive}.sha256"
+          echo "✅ Artifact ready: ${archive}"
+          echo "🔐 Checksum ready: ${archive}.sha256"
+          echo "::endgroup::"
+
+      - name: ⬆️ Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binstaller-${{ steps.version.outputs.value }}-${{ matrix.target }}
+          path: |
+            binstaller-${{ steps.version.outputs.value }}-${{ matrix.target }}.tar.gz
+            binstaller-${{ steps.version.outputs.value }}-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    name: 🚢 Publish release
+    runs-on: ubuntu-24.04
+    needs:
+      - build
+    if: ${{ needs.build.result == 'success' }}
+
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🏷️ Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ -z "${version}" ]]; then
+            echo "❌ Release version is empty" >&2
+            exit 1
+          fi
+
+          echo "🚢 Preparing release ${version}"
+          echo "value=${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: 📥 Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          pattern: binstaller-${{ steps.version.outputs.value }}-*
+          merge-multiple: true
+
+      - name: 🧰 Add example config
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.value }}"
+          example="release-artifacts/config.example.${version}.yaml"
+
+          echo "::group::🧰 Example config"
+          cp config.example.yaml "${example}"
+          shasum -a 256 "${example}" > "${example}.sha256"
+          echo "✅ Example config ready: ${example}"
+          echo "🔐 Checksum ready: ${example}.sha256"
+          echo "::endgroup::"
+
+      - name: 🔎 Verify release artifacts
+        shell: bash
+        run: |
+          echo "::group::🔎 Artifact inventory"
+          mapfile -t archives < <(find release-artifacts -type f -name '*.tar.gz' | sort)
+          printf '📦 %s\n' "${archives[@]}"
+          echo "::endgroup::"
+
+          if [[ "${#archives[@]}" -lt 1 ]]; then
+            echo "❌ No build artifacts found for ${{ steps.version.outputs.value }}" >&2
+            exit 1
+          fi
+
+          example="release-artifacts/config.example.${{ steps.version.outputs.value }}.yaml"
+          if [[ ! -f "${example}" || ! -f "${example}.sha256" ]]; then
+            echo "❌ Missing example config or checksum" >&2
+            exit 1
+          fi
+          echo "✅ Example config"
+
+          echo "::group::🧾 Required target check"
+          expected_targets=(linux-amd64 linux-arm64 macos-amd64 macos-arm64)
+          for target in "${expected_targets[@]}"; do
+            archive="release-artifacts/binstaller-${{ steps.version.outputs.value }}-${target}.tar.gz"
+            checksum="${archive}.sha256"
+            if [[ ! -f "${archive}" || ! -f "${checksum}" ]]; then
+              echo "❌ Missing release artifact or checksum for ${target}" >&2
+              exit 1
+            fi
+            echo "✅ ${target}"
+          done
+          echo "::endgroup::"
+
+          echo "::group::🔐 Checksum verification"
+          (cd release-artifacts && shasum -a 256 -c ./*.sha256)
+          echo "::endgroup::"
+
+      - name: 🚀 Publish GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.value }}"
+          notes=$'🚀 Automated binstaller release for '"${version}"$'.\n\nArtifacts:\n- 🐧 Linux amd64\n- 🐧 Linux arm64\n- 🍎 macOS amd64\n- 🍎 macOS arm64\n- 🧰 Example configuration\n\nEach asset includes a 🔐 SHA-256 checksum.'
+
+          if gh release view "${version}" >/dev/null 2>&1; then
+            echo "♻️ Updating existing release ${version}"
+            gh release upload "${version}" release-artifacts/* --clobber
+          else
+            echo "🚀 Creating release ${version}"
+            gh release create "${version}" release-artifacts/* \
+              --target "${GITHUB_SHA}" \
+              --title "${version}" \
+              --notes "${notes}"
+          fi
+          echo "🎉 Release ${version} is published"
