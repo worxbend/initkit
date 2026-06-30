@@ -582,3 +582,17 @@ baseline and close the remaining gaps in this order:
   environment-blocked in this agent shell because `test -t 0` reports
   `stdin_is_tty=false`. Local native-image validation is also blocked because
   `native-image` is not on `PATH`; `java -version` reports OpenJDK 25.0.3.
+- 2026-06-30: Validation iteration 55 re-ran the configured checkpoint after
+  the completed TUI excellence queue. No in-scope source or test fixes were
+  required. Focused config/core/CLI/TUI tests, recursive compile/test,
+  scalafmt check, Mill resolution, app help and command smokes, static
+  first-class TUI smoke, JSON validation, and whitespace checks all passed.
+  Full logs are in
+  `.agent-loop/validations/validation-55-20260630-125238/`.
+- The TUI static smoke again rendered the table-first `tui --config` frame and
+  printed `non-interactive terminal detected; rendered a static TUI frame`.
+  Remaining validation risks are environment-bound: `native-image` is not on
+  `PATH`, while `java -version` reports OpenJDK 25.0.3; `test -t 0` reports
+  `stdin_is_tty=false`, so live raw-terminal startup, resize, password modal,
+  logs/root-cause scrolling, quit/Ctrl+C, and cleanup still require an
+  interactive terminal.
