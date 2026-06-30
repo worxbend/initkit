@@ -524,3 +524,16 @@ baseline and close the remaining gaps in this order:
   passed: `./mill tui.test`, `./mill cli.test`, `./mill __.compile`,
   `./mill mill.scalalib.scalafmt/checkFormatAll`,
   `jq empty .agent-loop/tasks.json`, and `git diff --check`.
+- 2026-06-30: Implementation iteration 51 completed T009. Planning and
+  execution renderers now derive compact header/footer and table/info body
+  rectangles from the current viewport, including tiny terminal heights, and
+  panel widths no longer exceed very narrow viewport widths.
+- T009 centralized TUI resize handling so nested execution state receives
+  resize events even while a filter draft or modal owns input. Deterministic
+  tests now cover normal, narrow, and tiny snapshots for browsing, execution,
+  help, password, logs, and error output; state preservation across resize; and
+  keyboard/mouse-wheel routing to the focused widget after resize. Validation
+  passed: `./mill tui.test`, `./mill __.compile`,
+  `./mill app.run tui --config config.example.yaml`,
+  `./mill mill.scalalib.scalafmt/checkFormatAll`,
+  `jq empty .agent-loop/tasks.json`, and `git diff --check`.

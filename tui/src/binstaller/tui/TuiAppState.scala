@@ -505,7 +505,7 @@ object TuiAppController:
     case TuiInput.Character(value) if !value.isControl =>
       val nextDraft = state.filter.draft.getOrElse("") + value
       clampSelection(state.copy(filter = state.filter.copy(draft = Some(nextDraft))))
-    case TuiInput.Resize(value) => clampScrolls(state.copy(viewport = value))
+    case TuiInput.Resize(value) => resize(state, value)
     case _                      => state
 
   private def handleBrowsingInput(
@@ -554,7 +554,7 @@ object TuiAppController:
         case TuiInput.Character('n') | TuiInput.Character('N') =>
           state.copy(modal = None, modalScroll = 0)
         case TuiInput.Quit | TuiInput.CtrlC => state.copy(exitRequested = true)
-        case TuiInput.Resize(value)         => clampScrolls(state.copy(viewport = value))
+        case TuiInput.Resize(value)         => resize(state, value)
         case _                              => state
     case Some(_) => input match
         case TuiInput.Enter | TuiInput.Escape        => state.copy(modal = None, modalScroll = 0)
@@ -567,16 +567,13 @@ object TuiAppController:
         case TuiInput.Home                  => state.copy(modalScroll = 0)
         case TuiInput.End                   => state.copy(modalScroll = maxModalScroll(state))
         case TuiInput.Quit | TuiInput.CtrlC => state.copy(exitRequested = true)
-        case TuiInput.Resize(value)         => clampScrolls(state.copy(viewport = value))
+        case TuiInput.Resize(value)         => resize(state, value)
         case _                              => state
     case None => handleBrowsingInput(state, input, actions)
 
   private def handleExecutionInput(state: TuiAppState, input: TuiInput): TuiAppState = input match
-    case TuiInput.Resize(value) => state.copy(
-        viewport = value,
-        executionState = state.executionState.map(_.handle(input))
-      )
-    case TuiInput.Tab =>
+    case TuiInput.Resize(value) => resize(state, value)
+    case TuiInput.Tab           =>
       state.copy(focus = if state.focus == TuiPane.Logs then TuiPane.Plan else TuiPane.Logs)
     case TuiInput.Character('l') => state.copy(focus = TuiPane.Logs)
     case TuiInput.Up | TuiInput.Down | TuiInput.PageUp | TuiInput.PageDown | TuiInput.Home |
@@ -644,6 +641,11 @@ object TuiAppController:
 
   private def scrollModal(state: TuiAppState, delta: Int): TuiAppState =
     state.copy(modalScroll = (state.modalScroll + delta).max(0).min(maxModalScroll(state)))
+
+  private def resize(state: TuiAppState, value: TuiViewport): TuiAppState = clampScrolls(state.copy(
+    viewport = value,
+    executionState = state.executionState.map(_.handle(TuiInput.Resize(value)))
+  ))
 
   private def openInfoFailure(state: TuiAppState): Option[TuiAppState] =
     state.infoOutput.flatMap(_.failure).map(failure =>

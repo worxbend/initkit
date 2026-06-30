@@ -1201,7 +1201,7 @@ object ExecutionTuiRenderer:
   def render(model: ExecutionTuiModel): Vector[String] =
     val width  = model.viewport.width.max(1)
     val layout = ExecutionTuiLayout.forViewport(model.viewport)
-    header(model, width) ++
+    header(model, layout, width) ++
       executionTable(
         model.active,
         model.rows,
@@ -1211,7 +1211,7 @@ object ExecutionTuiRenderer:
         width
       ) ++
       infoPanel(model, layout, width) ++
-      footer(model, width)
+      footer(model, layout, width)
 
   /** Format elapsed time for compact terminal display. */
   def formatDuration(duration: Duration): String =
@@ -1224,9 +1224,13 @@ object ExecutionTuiRenderer:
     case Some(total) => s"${formatBytes(downloadedBytes)}/${formatBytes(total)}"
     case None        => formatBytes(downloadedBytes)
 
-  private def header(model: ExecutionTuiModel, width: Int): Vector[String] =
+  private def header(
+      model: ExecutionTuiModel,
+      layout: ExecutionTuiLayout,
+      width: Int
+  ): Vector[String] =
     val header = model.header
-    Vector(
+    val lines  = Vector(
       PlanningTuiStatus.style(
         PlanningTuiStatus.Active,
         fit(
@@ -1241,6 +1245,7 @@ object ExecutionTuiRenderer:
       ),
       ""
     )
+    lines.take(layout.headerHeight)
 
   private def executionTable(
       active: Option[ExecutionActiveTool],
@@ -1391,7 +1396,11 @@ object ExecutionTuiRenderer:
       pad(lines, layout.infoBodyHeight).map(line => panelLine(line, panelWidth)) ++
       Vector(panelBottom(panelWidth), "")
 
-  private def footer(model: ExecutionTuiModel, width: Int): Vector[String] =
+  private def footer(
+      model: ExecutionTuiModel,
+      layout: ExecutionTuiLayout,
+      width: Int
+  ): Vector[String] =
     val status = model.summary.getOrElse("running")
     Vector(
       fit(status, width),
@@ -1402,7 +1411,7 @@ object ExecutionTuiRenderer:
           width
         )
       )
-    )
+    ).take(layout.footerHeight)
 
   private def executionInfoLines(model: ExecutionTuiModel): Vector[String] =
     model.active.toVector.flatMap: active =>
@@ -1467,7 +1476,7 @@ object ExecutionTuiRenderer:
       val half = height / 2
       (selectedIndex - half).max(0).min(total - height)
 
-  private def contentWidth(width: Int): Int = width.min(132).max(20)
+  private def contentWidth(width: Int): Int = width.min(132).max(1)
 
   private final case class TableColumns(
       checkbox: Int,
@@ -1516,10 +1525,12 @@ object ExecutionTuiRenderer:
 
 /** Viewport-derived body heights for execution panes. */
 final case class ExecutionTuiLayout(
+    headerHeight: Int,
     rowBodyHeight: Int,
     dryRunBodyHeight: Int,
     logBodyHeight: Int,
-    infoBodyHeight: Int
+    infoBodyHeight: Int,
+    footerHeight: Int
 )
 
 /** Execution layout constructors. */
@@ -1527,10 +1538,17 @@ object ExecutionTuiLayout:
 
   /** Calculate execution pane heights from the current viewport. */
   def forViewport(viewport: TuiViewport): ExecutionTuiLayout =
-    val usable = (viewport.height.max(18) - 10).max(6)
-    val info   = usable.min(16).max(5)
-    val rows   = (usable - info).max(4)
-    ExecutionTuiLayout(rows, info, info, info)
+    val height        = viewport.height.max(1)
+    val header        = if height < 20 then 2 else 4
+    val footer        = if height < 20 then 1 else 2
+    val fixed         = header + footer + 7
+    val bodies        = (height - fixed).max(2)
+    val preferredInfo =
+      if height >= 34 then bodies.min(16).max(5)
+      else (bodies - (bodies / 3)).max(1)
+    val info = preferredInfo.min(bodies - 1).max(1)
+    val rows = (bodies - info).max(1)
+    ExecutionTuiLayout(header, rows, info, info, info, footer)
 
 /** Focusable panes in the planning TUI. */
 enum TuiPane(val label: String):
@@ -1613,10 +1631,12 @@ object PlanningTuiState:
 
 /** Viewport-derived body heights for planning panes. */
 final case class PlanningTuiLayout(
+    headerHeight: Int,
     tableBodyHeight: Int,
     detailBodyHeight: Int,
     logBodyHeight: Int,
-    infoBodyHeight: Int
+    infoBodyHeight: Int,
+    footerHeight: Int
 )
 
 /** Planning layout constructors. */
@@ -1624,10 +1644,17 @@ object PlanningTuiLayout:
 
   /** Calculate planning pane heights from the current viewport. */
   def forViewport(viewport: TuiViewport): PlanningTuiLayout =
-    val usable = (viewport.height.max(18) - 10).max(6)
-    val info   = usable.min(16).max(5)
-    val table  = (usable - info).max(4)
-    PlanningTuiLayout(table, info, info, info)
+    val height        = viewport.height.max(1)
+    val header        = if height < 24 then 2 else 6
+    val footer        = if height < 24 then 1 else 3
+    val fixed         = header + footer + 7
+    val bodies        = (height - fixed).max(2)
+    val preferredInfo =
+      if height >= 34 then bodies.min(16).max(5)
+      else (bodies - (bodies / 3)).max(1)
+    val info  = preferredInfo.min(bodies - 1).max(1)
+    val table = (bodies - info).max(1)
+    PlanningTuiLayout(header, table, info, info, info, footer)
 
 /** Interactive planning TUI session runner. */
 object PlanningTuiSession:
@@ -1895,14 +1922,18 @@ object PlanningTuiRenderer:
   def render(model: PlanningTuiModel): Vector[String] =
     val width  = model.viewport.width.max(1)
     val layout = PlanningTuiLayout.forViewport(model.viewport)
-    header(model, width) ++
+    header(model, layout, width) ++
       table(model.rows, layout, width, model.focusedPane == TuiPane.Plan) ++
       infoPanel(model, layout, width) ++
-      footer(model, width)
+      footer(model, layout, width)
 
-  private def header(model: PlanningTuiModel, width: Int): Vector[String] =
+  private def header(
+      model: PlanningTuiModel,
+      layout: PlanningTuiLayout,
+      width: Int
+  ): Vector[String] =
     val header = model.header
-    Vector(
+    val lines  = Vector(
       PlanningTuiStatus.style(
         PlanningTuiStatus.Active,
         fit(
@@ -1924,6 +1955,7 @@ object PlanningTuiRenderer:
       ),
       ""
     )
+    lines.take(layout.headerHeight)
 
   private def table(
       rows: Vector[PlanningTuiRow],
@@ -2042,15 +2074,19 @@ object PlanningTuiRenderer:
     val padded = lines.take(height) ++ Vector.fill((height - lines.size).max(0))("")
     padded.map(line => panelLine(line, width))
 
-  private def footer(model: PlanningTuiModel, width: Int): Vector[String] =
+  private def footer(
+      model: PlanningTuiModel,
+      layout: PlanningTuiLayout,
+      width: Int
+  ): Vector[String] =
     val legend = PlanningTuiStatus.legendOrder.map(_.label).mkString(" ")
     Vector(
       PlanningTuiStatus.style(PlanningTuiStatus.Active, fit(model.keybar, width)),
       fit(model.footer, width),
       fit(s"status $legend", width)
-    )
+    ).take(layout.footerHeight)
 
-  private def contentWidth(width: Int): Int = width.min(132).max(20)
+  private def contentWidth(width: Int): Int = width.min(132).max(1)
 
   private def panelTop(title: String, width: Int): String =
     val label     = s" $title "

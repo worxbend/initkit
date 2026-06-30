@@ -1495,6 +1495,138 @@ object TuiModuleTest extends TestSuite:
       assertRenderedWithin(TuiAppRenderer.render(executionState), width = 30)
       assert(executionState.executionState.exists(_.viewport == TuiViewport(30, 22)))
 
+    test("responsive snapshots cover browsing execution modals logs and errors"):
+      val fixture   = writeFixture(longValues = true)
+      val baseState = sessionState(
+        fixture,
+        settings = testSettings(width = 100, height = 42).copy(
+          logs = Vector.tabulate(32)(index => s"snapshot log line ${index + 1}")
+        )
+      ).appState
+      val prompt = TuiPasswordPromptView.fromRequest(
+        sudoRequest(),
+        maskedLength = 4,
+        SensitiveValueRedactions.empty
+      )
+      val failure = TuiFailure.fromResult(
+        "Dry run failed",
+        TuiFailureCategory.DryRun,
+        "dry-run",
+        InstallerResult(Vector("failed beta: command exited", "  exit code: 2"), 2),
+        Some("beta"),
+        Some(fixture.stateFile.toString),
+        SensitiveValueRedactions.empty
+      )
+      val viewports = Vector(
+        TuiViewport(100, 42),
+        TuiViewport(38, 22),
+        TuiViewport(18, 12)
+      )
+
+      viewports.foreach: viewport =>
+        val execution = executionSnapshotState(fixture, viewport)
+        val snapshots = Vector(
+          "browsing"  -> TuiAppRenderer.render(baseState.copy(viewport = viewport)),
+          "execution" -> TuiAppRenderer.render(baseState.copy(
+            viewport = viewport,
+            mode = TuiBrowsingMode.DryRun,
+            executionState = Some(execution)
+          )),
+          "help" -> TuiAppRenderer.render(baseState.copy(
+            viewport = viewport,
+            modal = Some(TuiModal.Help)
+          )),
+          "password" -> TuiAppRenderer.render(baseState.copy(
+            viewport = viewport,
+            modal = Some(TuiModal.PasswordPrompt(prompt))
+          )),
+          "logs" -> TuiAppRenderer.render(baseState.copy(
+            viewport = viewport,
+            focus = TuiPane.Logs,
+            logScroll = 4
+          )),
+          "error" -> TuiAppRenderer.render(baseState.copy(
+            viewport = viewport,
+            infoOutput = Some(TuiInfoOutput(
+              "Dry run failed",
+              failure.title +: failure.renderLines,
+              Some(failure)
+            ))
+          ))
+        )
+
+        snapshots.foreach: (name, lines) =>
+          assertRenderedInsideViewport(lines, viewport, name)
+          val plain = stripAnsi(lines.mkString("\n"))
+          name match
+            case "browsing"  => assert(plain.contains("Plan"))
+            case "execution" =>
+              assert(plain.contains("Execution") || plain.contains("alpha active"))
+            case "help"     => assert(plain.contains("Help"))
+            case "password" => assert(plain.contains("Sudo") || plain.contains("pass"))
+            case "logs"     => assert(plain.contains("Logs"))
+            case "error"    => assert(plain.contains("error") || plain.contains("Dry"))
+
+    test("resize preserves selection focus scrolls filter draft modal and execution progress"):
+      val fixture   = writeFixture(longValues = true)
+      val logs      = Vector.tabulate(48)(index => s"resize log line ${index + 1}")
+      val execution = executionSnapshotState(fixture, TuiViewport(100, 50))
+        .copy(logs = logs, logScroll = 3)
+      val before = sessionState(
+        fixture,
+        settings = testSettings(width = 100, height = 50).copy(logs = logs)
+      ).appState.copy(
+        mode = TuiBrowsingMode.DryRun,
+        selection = TuiSelection(Set("beta")),
+        focus = TuiPane.Logs,
+        selectedIndex = 1,
+        filter = TuiAppFilter(value = None, draft = Some("be")),
+        modal = Some(TuiModal.Help),
+        modalScroll = 1,
+        executionState = Some(execution),
+        detailScroll = 1,
+        logScroll = 3
+      ).refreshHeader
+
+      val after = TuiAppController.handle(before, TuiInput.Resize(TuiViewport(80, 40)))
+
+      assert(after.selectedToolNames == Set("beta"))
+      assert(after.focus == TuiPane.Logs)
+      assert(after.selectedIndex == 1)
+      assert(after.filter.draft.contains("be"))
+      assert(after.modal.contains(TuiModal.Help))
+      assert(after.detailScroll == 1)
+      assert(after.logScroll == 3)
+      assert(after.executionState.exists(_.viewport == TuiViewport(80, 40)))
+      assert(after.executionState.flatMap(_.active.map(_.name)).contains("alpha"))
+      assert(after.executionState.flatMap(_.active.flatMap(_.downloadedBytes)).contains(512L))
+
+    test("keyboard and wheel input keep targeting focused widgets after resize"):
+      val fixture  = writeFixture(longValues = true)
+      val logs     = Vector.tabulate(40)(index => s"focused log line ${index + 1}")
+      val browsing = sessionState(
+        fixture,
+        settings = testSettings(width = 100, height = 42).copy(logs = logs)
+      ).appState.copy(focus = TuiPane.Logs)
+      val resizedBrowsing  = TuiAppController.handle(browsing, TuiInput.Resize(TuiViewport(54, 22)))
+      val scrolledBrowsing = TuiAppController.handle(resizedBrowsing, TuiInput.MouseWheelDown)
+      val execution        = browsing.copy(
+        mode = TuiBrowsingMode.DryRun,
+        executionState = Some(executionSnapshotState(fixture, TuiViewport(100, 42)).copy(
+          logs = logs
+        ))
+      )
+      val resizedExecution =
+        TuiAppController.handle(execution, TuiInput.Resize(TuiViewport(54, 22)))
+      val scrolledExecution = TuiAppController.handle(resizedExecution, TuiInput.MouseWheelDown)
+
+      assert(scrolledBrowsing.focus == TuiPane.Logs)
+      assert(scrolledBrowsing.logScroll > resizedBrowsing.logScroll)
+      assert(scrolledBrowsing.selectedIndex == resizedBrowsing.selectedIndex)
+      assert(scrolledExecution.focus == TuiPane.Logs)
+      assert(scrolledExecution.executionState.exists(_.logScroll >
+        resizedExecution.executionState.map(_.logScroll).getOrElse(0)))
+
     test("interactive planning rerenders after resize input"):
       val fixture  = writeFixture(longValues = true)
       val terminal = FakeTuiTerminal(
@@ -1629,6 +1761,31 @@ object TuiModuleTest extends TestSuite:
     snapshotFor(fixture.options),
     settings
   )
+
+  private def executionSnapshotState(
+      fixture: TuiFixture,
+      viewport: TuiViewport
+  ): ExecutionTuiState = ExecutionTuiState
+    .initial(
+      TuiRequest(TuiMode.Apply, fixture.options),
+      ExecutionTuiSettings.fromPlanning(
+        testSettings(width = viewport.width, height = viewport.height)
+      ).copy(candidateNames = Vector("alpha", "beta"))
+    )
+    .onEvent(InstallerEvent.ToolStarted("alpha", InstallerPhase.Downloading, elapsed(20)))
+    .onEvent(InstallerEvent.DownloadProgress(
+      "alpha",
+      fixture.longUrl,
+      512L,
+      Some(1024L),
+      DownloadProgressStatus.Advanced,
+      elapsed(300)
+    ))
+    .onEvent(InstallerEvent.LogLine(
+      Some("alpha"),
+      "snapshot execution log line",
+      elapsed(350)
+    ))
 
   private def withRedactions(
       state: PlanningTuiState,
@@ -1883,6 +2040,20 @@ object TuiModuleTest extends TestSuite:
 
   private def assertRenderedWithin(lines: Vector[String], width: Int): Unit =
     assert(lines.forall(line => stripAnsi(line).length <= width))
+
+  private def assertRenderedInsideViewport(
+      lines: Vector[String],
+      viewport: TuiViewport,
+      name: String
+  ): Unit =
+    val renderedHeight = lines.size
+    val maxLineWidth   = lines.map(line => stripAnsi(line).length).maxOption.getOrElse(0)
+    val ansiArtifacts  = stripAnsi(lines.mkString("\n")).contains("\u001b[")
+
+    assert(name.nonEmpty)
+    assert(renderedHeight <= viewport.height)
+    assert(maxLineWidth <= viewport.width)
+    assert(!ansiArtifacts)
 
   private def silentOutput(): PrintWriter = PrintWriter(ByteArrayOutputStream(), true)
 
