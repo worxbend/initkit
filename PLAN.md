@@ -565,3 +565,20 @@ baseline and close the remaining gaps in this order:
   Documentation validation passed: `./mill app.run tui --help`,
   `./mill app.run tui --config config.example.yaml`, `git diff --check`, and
   `jq empty .agent-loop/tasks.json`.
+- 2026-06-30: Validation iteration 54 completed T012, the final validation
+  gate for the TUI excellence queue. Focused config/core/CLI/TUI tests,
+  recursive compile/test, scalafmt check, Mill resolution, app help and command
+  smokes, static first-class TUI smoke, JSON validation, stale transitional-doc
+  scans, and whitespace checks all passed. Full logs are in
+  `.agent-loop/validations/validation-54-20260630-124858/`.
+- The T012 static TUI smoke rendered the table-first `tui --config` frame and
+  printed `non-interactive terminal detected; rendered a static TUI frame`.
+  Current user-facing docs, release docs, and release workflow examples no
+  longer contain transitional `plan/apply --tui` examples; the remaining
+  `--tui` mentions are either historical review context or negative assertions
+  that `plan`/`apply` no longer own the flag.
+- Manual live-terminal smoke status for startup, resize, password modal, logs,
+  root-cause modal, `q`, Ctrl+C, and terminal cleanup remains
+  environment-blocked in this agent shell because `test -t 0` reports
+  `stdin_is_tty=false`. Local native-image validation is also blocked because
+  `native-image` is not on `PATH`; `java -version` reports OpenJDK 25.0.3.
